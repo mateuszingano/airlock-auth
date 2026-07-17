@@ -1,0 +1,42 @@
+name: CI
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  # 1) Unit tests — pure scanner, no network.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: node --test
+
+  # 2) The Action must GATE: run it (uses: ./) against the leaky fixture and
+  #    assert it fails the build — a gate that never fails is worthless.
+  action-gates-a-leak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: gate
+        continue-on-error: true
+        uses: ./
+        with:
+          dir: fixtures
+      - name: the gate must FAIL on the leaky fixture
+        run: |
+          if [ "${{ steps.gate.outcome }}" = "failure" ]; then
+            echo "✓ gate correctly failed on the leaky fixture"
+          else
+            echo "::error::expected the gate to fail on fixtures/ but it passed"
+            exit 1
+          fi
+
+  # 3) The Action must PASS on clean code (no false alarm).
+  action-passes-when-clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p _clean && echo 'export const ok = 1' > _clean/ok.ts
+      - uses: ./
+        with:
+          dir: _clean
