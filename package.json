@@ -1,0 +1,46 @@
+{
+  "name": "airlock-auth",
+  "version": "0.1.0",
+  "description": "The CI gate for Next.js auth mistakes. Fails your build when a server secret is exposed via NEXT_PUBLIC_*, and warns on mutating routes with no auth check and webhooks with no signature verification. No build required.",
+  "type": "module",
+  "bin": {
+    "auth-guard": "bin/auth-guard.mjs",
+    "airlock-auth": "bin/auth-guard.mjs"
+  },
+  "exports": {
+    ".": "./src/scan.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/auth-guard.mjs",
+    "test": "node --test",
+    "prepublishOnly": "node --test"
+  },
+  "keywords": [
+    "nextjs",
+    "supabase",
+    "auth",
+    "authorization",
+    "security",
+    "ci",
+    "ci-gate",
+    "linter",
+    "next-public",
+    "github-action"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Mateus Zingano",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mateuszingano/airlock-auth.git"
+  },
+  "homepage": "https://shipsealed.com",
+  "license": "MIT"
+}

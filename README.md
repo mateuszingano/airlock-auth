@@ -1,0 +1,78 @@
+# Auth Route Guard
+
+**The CI gate for Next.js auth mistakes.** It scans your source and fails the
+build when a server secret is exposed via `NEXT_PUBLIC_*` — the leak that ships
+straight into the client bundle. It also warns on mutating route handlers with
+no auth check and webhook routes that never verify a signature. **No build, no
+runtime, no database.**
+
+```bash
+npx airlock-auth               # scans the current project
+npx airlock-auth ./apps/web
+```
+
+## What it flags
+
+| Rule | Level | Catches |
+|------|-------|---------|
+| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, password, LLM-provider key) |
+| `unauth_mutation` | warn | a mutating route with no auth check — App Router `route.ts` **and** Pages Router `pages/api` |
+| `unverified_webhook` | warn | a webhook route that never verifies a signature |
+
+Only **fail** findings break the build. Warnings are printed for review.
+
+**No false alarms by design.** A `NEXT_PUBLIC_*` name that holds a server secret
+(API key, token, access key, service role, secret, password, LLM-provider key) is
+flagged; names that are public on purpose — `ANON_KEY`, `PUBLISHABLE`, `MAPBOX`,
+Google Maps / Firebase client config, web-push `VAPID`, `TURNSTILE`, analytics /
+site keys — are *not*. A strong secret word (`PRIVATE`, `SECRET`, `SIGNING`,
+`ENCRYPTION`) is always flagged, even on such a vendor (so `FIREBASE_PRIVATE_KEY`
+is caught while `FIREBASE_API_KEY` is not). Read-only `GET` handlers are ignored,
+and a webhook is judged on its signature check, not on "missing auth".
+
+## What it does *not* cover yet
+
+Auth Route Guard covers the three highest-signal Next.js mistakes. These are
+**not** checked yet — review them yourself (or lean on runtime auth + the Airlock
+Monitor):
+
+- **Server Actions** (`'use server'`) — route handlers are covered (App Router
+  `route.ts` **and** Pages Router `pages/api`), but Server Actions are not yet.
+- **Authorization *correctness*** — it checks that an auth call is *present*, not
+  that it's *right*. IDOR, tenant scoping and role checks are still on you.
+- **Auth via middleware only** — a route guarded by `middleware.ts` that never
+  references auth in its own file may warn; use `--auth-fn` or allow-list it.
+- **Secrets exposed by other means** — only `NEXT_PUBLIC_*` names are flagged, not
+  a secret hardcoded in client code or shipped some other way.
+- **Read handlers** (`GET`) — a `GET` that leaks data without auth is not flagged;
+  only mutations are.
+
+## In CI (GitHub Actions)
+
+```yaml
+- uses: mateuszingano/airlock-auth@v1
+  with:
+    dir: .
+    # allow: /api/health,rule:unauth_mutation
+```
+
+> `@v1` works once the first release tag is published. Until then, pin `@main`
+> or run `npx --yes airlock-auth .` in a step.
+
+## Allow-listing intentional cases
+
+Some routes are public on purpose (a health check, a public read). Silence a
+finding by route path, env name, or rule:
+
+```bash
+airlock-auth --allow "/api/health,rule:unauth_mutation"
+# or: AUTH_GUARD_ALLOW=/api/health airlock-auth
+```
+
+## Exit codes
+
+`0` passed · `1` an exposed secret was found · `2` usage error.
+
+---
+
+Part of [ShipSealed](https://shipsealed.com) — ship apps that don't leak. MIT licensed.
