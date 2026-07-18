@@ -186,11 +186,13 @@ export function scanSecrets(rawText, file) {
   const out = []
   const seen = new Set()
   // The NEXT_PUBLIC_ prefix must be exact (Next.js only inlines that spelling),
-  // but the SUFFIX may be any case AND any separator style — camelCase, snake, or
-  // ALL-CAPS glued with none (`SERVICEROLEKEY`). A secret in any of those spellings
-  // is still a real leak, so canonicalSuffix folds them all to one form before
-  // matching. This normalizes the CLASS of spelling, not one instance at a time.
-  const re = /NEXT_PUBLIC_[A-Za-z0-9_]+/g
+  // but the SUFFIX may be any case AND any separator style — camelCase, snake,
+  // kebab (`service-role-key`), or ALL-CAPS glued with none (`SERVICEROLEKEY`). A
+  // secret in any of those spellings is still a real leak, so canonicalSuffix folds
+  // them all to one form before matching. The extraction class MUST include `-` too,
+  // or a kebab name is truncated at the first hyphen before canonicalSuffix ever
+  // sees it (the exact gap that let `NEXT_PUBLIC_service-role-key` slip through).
+  const re = /NEXT_PUBLIC_[A-Za-z0-9_-]+/g
   let m
   while ((m = re.exec(text))) {
     const name = m[0]

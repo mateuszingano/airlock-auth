@@ -288,6 +288,16 @@ test('#glued the same secret in every spelling folds to one verdict (class, not 
   }
 })
 
+// BYPASS (re-audit → 8.5): a kebab-case suffix (service-role-key) was truncated at
+// the first hyphen by the extraction regex before canonicalSuffix ever saw it, so
+// the secret leaked. The extraction class now includes `-`.
+test('#kebab a kebab-case NEXT_PUBLIC_ secret is caught, public kebab names stay exempt', () => {
+  for (const name of ['NEXT_PUBLIC_service-role-key', 'NEXT_PUBLIC_stripe-secret-key', 'NEXT_PUBLIC_private-key'])
+    assert.equal(scanSecrets(`x = process.env['${name}']`, 'a.ts').length, 1, `expected ${name} FLAGGED (kebab)`)
+  for (const name of ['NEXT_PUBLIC_api-key-name', 'NEXT_PUBLIC_public-key', 'NEXT_PUBLIC_publishable-key', 'NEXT_PUBLIC_segment-write-key'])
+    assert.equal(scanSecrets(`x = process.env['${name}']`, 'a.ts').length, 0, `expected ${name} NOT flagged`)
+})
+
 test('#case a mixed/lower-case NEXT_PUBLIC_ secret name is still caught (case bypass closed)', () => {
   assert.equal(scanSecrets('x = NEXT_PUBLIC_stripe_secret', 'a.ts').length, 1)
   assert.equal(scanSecrets('x = NEXT_PUBLIC_Supabase_Service_Role_Key', 'a.ts').length, 1)
