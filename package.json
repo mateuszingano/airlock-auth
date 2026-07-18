@@ -1,6 +1,6 @@
 {
   "name": "airlock-auth",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "The CI gate for Next.js auth mistakes. Fails your build when a server secret is exposed via NEXT_PUBLIC_*, and warns on mutating routes with no auth check and webhooks with no signature verification. No build required.",
   "type": "module",
   "bin": {
