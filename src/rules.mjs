@@ -26,7 +26,14 @@
 // `DATABASE_URL` are matched. DATABASE_URL stays in SECRETY, not HARD_SECRET, so a
 // genuinely public one — Firebase's `NEXT_PUBLIC_FIREBASE_DATABASE_URL` — is still
 // waved through by PUBLIC_OK, while a bare Postgres URL is caught.)
-export const SECRETY = /(?:SERVICE_ROLE|SERVICE_KEY|SECRET|PRIVATE|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|CREDENTIAL|TOKEN|ENCRYPTION|SIGNING|DATABASE_URL|(?:ANTHROPIC|OPENAI|OPENROUTER|GROQ|MISTRAL|COHERE|REPLICATE|HUGGINGFACE|PERPLEXITY|DEEPSEEK|TOGETHER|GEMINI|XAI)_?KEY)(?![A-Z0-9])/
+// NOTE: the suffix is CANONICALIZED before these match — camelCase split AND all
+// separators removed (see canonicalSuffix), so patterns are separator-free and a
+// glued spelling collapses to the same token as the snake one: `serviceRoleKey`,
+// `SERVICE_ROLE_KEY` and `SERVICEROLEKEY` all become `SERVICEROLEKEY`. That's why
+// each token is written glued (SERVICEROLE, APIKEY) and absorbs an optional trailing
+// KEY/TOKEN, all trailing-anchored with (?![A-Z0-9]) so `TOKEN` won't match inside
+// `TOKENIZER` nor `KEY` inside `KEYCLOAK`.
+export const SECRETY = /(?:SERVICEROLE|SERVICEKEY|APIKEY|ACCESSKEY|DATABASEURL|(?:SECRET|PRIVATE)(?:KEY|TOKEN)?|PASSWORD|PASSWD|CREDENTIAL|TOKEN|ENCRYPTION|SIGNING|(?:ANTHROPIC|OPENAI|OPENROUTER|GROQ|MISTRAL|COHERE|REPLICATE|HUGGINGFACE|PERPLEXITY|DEEPSEEK|TOGETHER|GEMINI|XAI)KEY)(?![A-Z0-9])/
 // Strong secret words the PUBLIC_OK allow-list must NEVER wave through — even on a
 // vendor whose other NEXT_PUBLIC_ keys are public (FIREBASE_PRIVATE_KEY,
 // ALGOLIA_ADMIN_KEY, FIREBASE_ADMIN_TOKEN, ALGOLIA_MASTER_KEY). `ADMIN_(KEY|TOKEN)`
@@ -38,13 +45,20 @@ export const SECRETY = /(?:SERVICE_ROLE|SERVICE_KEY|SECRET|PRIVATE|PASSWORD|PASS
 // `ADMIN_KEYCLOAK_URL` or `SERVER_TOKENIZER_URL` (which are not secrets). Suffix is
 // camel-split then upper-cased before testing (see scanSecrets/normalizeSuffix), so
 // these patterns stay case-normalized and `masterKey` → `MASTER_KEY` is caught.
-const HARD_SECRET = /(?:SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL|MASTER[_-]?KEY|(?:ADMIN|SERVER)[_-]?(?:KEY|TOKEN))(?![A-Z0-9])/
+// Canonicalized (separator-free) too. Standalone strong words absorb an optional
+// glued KEY/TOKEN (`SECRETKEY`, `PRIVATEKEY`, `SERVICEROLEKEY`). ADMIN/SERVER/MASTER
+// REQUIRE a KEY/TOKEN so a bare `ADMIN` / `ADMIN_URL` (→ ADMINURL) is not flagged.
+const HARD_SECRET = /(?:(?:SERVICEROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL)(?:KEY|TOKEN)?|(?:ADMIN|SERVER|MASTER)(?:KEY|TOKEN))(?![A-Z0-9])/
 // …names that look scary but are public by design: anon / publishable / site keys,
 // analytics IDs, client-SDK config (Firebase, Google Maps, web-push VAPID), and
 // public client tokens/keys of common realtime/analytics/error SDKs. A CLIENT_TOKEN
 // (e.g. Paddle's — the stack ShipSealed itself sells on) is public by design; a
 // CLIENT_SECRET is not, and stays caught by HARD_SECRET.
-const PUBLIC_OK = /ANON|PUBLISHABLE|SITE_KEY|CLIENT_ID|CLIENT_TOKEN|MEASUREMENT_ID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAM_API_KEY|GETSTREAM|LIVEKIT|LIVEBLOCKS_PUBLIC|SEGMENT_WRITE|SENTRY_DSN/
+// Canonicalized (separator-free) — matches the same de-separated suffix. Left
+// lenient (no trailing anchor) because these are EXEMPTIONS and HARD_SECRET is
+// checked first, so a real secret on a "public" vendor (FIREBASE_PRIVATE_KEY,
+// ALGOLIA_ADMIN_KEY) is still caught regardless of a PUBLIC_OK match.
+const PUBLIC_OK = /ANON|PUBLISHABLE|SITEKEY|CLIENTID|CLIENTTOKEN|MEASUREMENTID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAMAPIKEY|GETSTREAM|LIVEKIT|LIVEBLOCKSPUBLIC|SEGMENTWRITE|SENTRYDSN/
 
 // A mutating export in an App Router route handler.
 const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|PUT|PATCH|DELETE)\b/g
@@ -81,8 +95,11 @@ function norm(p) {
 // (`serviceRoleKey` → `service_Role_Key`, `apiKey` → `api_Key`) and THEN upper-case,
 // yielding `SERVICE_ROLE_KEY` / `API_KEY` — matched by the same patterns as the
 // screaming-case spelling. Matching is therefore case-insensitive on the suffix.
-function normalizeSuffix(s) {
-  return s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()
+function canonicalSuffix(s) {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2') // split camelCase (serviceRoleKey → service_Role_Key)
+    .toUpperCase()
+    .replace(/[_-]/g, '') // then drop ALL separators → one canonical glued form
 }
 
 // Strip JS/TS comments so a comment ("// TODO: verify signature") can't fake a
@@ -169,14 +186,15 @@ export function scanSecrets(rawText, file) {
   const out = []
   const seen = new Set()
   // The NEXT_PUBLIC_ prefix must be exact (Next.js only inlines that spelling),
-  // but the SUFFIX may be any case, incl. camelCase with no separators — a
-  // mixed-case name is still a real leak, so we camel-split + upper-case it before
-  // matching (all the patterns are screaming-snake). See normalizeSuffix.
+  // but the SUFFIX may be any case AND any separator style — camelCase, snake, or
+  // ALL-CAPS glued with none (`SERVICEROLEKEY`). A secret in any of those spellings
+  // is still a real leak, so canonicalSuffix folds them all to one form before
+  // matching. This normalizes the CLASS of spelling, not one instance at a time.
   const re = /NEXT_PUBLIC_[A-Za-z0-9_]+/g
   let m
   while ((m = re.exec(text))) {
     const name = m[0]
-    const suffix = normalizeSuffix(name.slice('NEXT_PUBLIC_'.length))
+    const suffix = canonicalSuffix(name.slice('NEXT_PUBLIC_'.length))
     if (seen.has(name)) continue
     // A hard secret is always flagged; a softer signal (API key / token / LLM key)
     // is flagged unless the name matches a known-public pattern (anon, publishable…).

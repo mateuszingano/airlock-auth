@@ -265,6 +265,29 @@ test('#anchor ADMIN_KEY/SERVER_TOKEN as a substring of a public name is NOT flag
   assert.equal(scanSecrets('x = NEXT_PUBLIC_FCM_SERVER_TOKEN', 'a.ts').length, 1)
 })
 
+// GLUED (re-audit → 6.5→): an ALL-CAPS name with NO separator (SECRETKEY,
+// SERVICEROLEKEY) survived normalization and matched no snake pattern. The fix
+// canonicalizes the CLASS of spelling: camelCase, snake, kebab and glued all fold
+// to one separator-free form, so a secret in ANY spelling is caught, once.
+test('#glued all-caps glued secrets (no separator) are caught — bypass closed', () => {
+  for (const name of [
+    'NEXT_PUBLIC_SECRETKEY', 'NEXT_PUBLIC_PRIVATEKEY', 'NEXT_PUBLIC_SERVICEROLEKEY',
+    'NEXT_PUBLIC_MASTERKEY', 'NEXT_PUBLIC_ADMINKEY', 'NEXT_PUBLIC_SERVERTOKEN', 'NEXT_PUBLIC_APIKEY',
+  ]) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 1, `expected ${name} FLAGGED (glued)`)
+  }
+})
+
+test('#glued the same secret in every spelling folds to one verdict (class, not instance)', () => {
+  for (const name of ['NEXT_PUBLIC_serviceRoleKey', 'NEXT_PUBLIC_service_role_key', 'NEXT_PUBLIC_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SERVICEROLEKEY', 'NEXT_PUBLIC_ServiceRoleKey']) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 1, `expected ${name} FLAGGED`)
+  }
+  // and a public one folds the same way — still exempt in every spelling
+  for (const name of ['NEXT_PUBLIC_supabaseAnonKey', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_supabaseanonkey']) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 0, `expected ${name} NOT flagged`)
+  }
+})
+
 test('#case a mixed/lower-case NEXT_PUBLIC_ secret name is still caught (case bypass closed)', () => {
   assert.equal(scanSecrets('x = NEXT_PUBLIC_stripe_secret', 'a.ts').length, 1)
   assert.equal(scanSecrets('x = NEXT_PUBLIC_Supabase_Service_Role_Key', 'a.ts').length, 1)
