@@ -251,6 +251,27 @@ test('#server a SERVER_KEY/SERVER_TOKEN (e.g. FCM) is a hard secret; a public WR
   assert.equal(scanSecrets('x = NEXT_PUBLIC_SEGMENT_WRITE_KEY', 'a.ts').length, 0)
 })
 
+// REGRESSION (0.1.3 broke this): ADMIN_KEY / SERVER_TOKEN must match the WHOLE
+// word, not a substring of legit public config → no false positive on installs.
+test('#anchor ADMIN_KEY/SERVER_TOKEN as a substring of a public name is NOT flagged', () => {
+  for (const name of [
+    'NEXT_PUBLIC_ADMIN_KEYCLOAK_URL', 'NEXT_PUBLIC_SERVER_TOKENIZER_URL',
+    'NEXT_PUBLIC_ADMIN_KEYBOARD_LAYOUT', 'NEXT_PUBLIC_SERVER_KEYSPACE',
+  ]) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 0, `expected ${name} NOT flagged (public config, not a key)`)
+  }
+  // but the real whole-word key still flags
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_ALGOLIA_ADMIN_KEY', 'a.ts').length, 1)
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_FCM_SERVER_TOKEN', 'a.ts').length, 1)
+})
+
+test('#case a mixed/lower-case NEXT_PUBLIC_ secret name is still caught (case bypass closed)', () => {
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_stripe_secret', 'a.ts').length, 1)
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_Supabase_Service_Role_Key', 'a.ts').length, 1)
+  // still no false positive on a public one, any case
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_supabase_anon_key', 'a.ts').length, 0)
+})
+
 // ---- P1 fix #3: allow-list must not silence via loose substring ----
 test('#3 --allow key does NOT silence a real secret (fails need an exact name)', async () => {
   const r = await scan({ dir: fxDir, allow: ['key'] })
