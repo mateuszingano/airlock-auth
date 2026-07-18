@@ -408,3 +408,22 @@ test('#serveraction a use-server write with no auth is flagged; auth/read-only/n
   assert.equal(flag('\'use server\'\nexport async function f(){ await sql`delete from t where id=1` }'), 1, 'sql`` tagged template')
   assert.equal(flag(`'use server'\nexport async function f(){ await db.query('delete from users where id=$1',[id]) }`), 1, 'db.query() raw')
 })
+
+// Server Actions are judged PER exported function now — an auth call in one action
+// must not clear an unauthed write in another (the file-level false negative).
+test('#serveraction-perfn a mixed file flags only the unauthed action', () => {
+  const flag = (src) => scanServerAction(src, 'a.ts').length
+  const mixed = `'use server'
+export async function safe(){ const u = await getUser(); await db.from('n').insert({}) }
+export async function danger(id){ await db.from('n').delete().eq('id', id) }`
+  assert.equal(flag(mixed), 1, 'the unauthed action is caught even though a sibling authenticates')
+  const both = `'use server'
+export async function a(){ await db.from('n').insert({}) }
+export async function b(id){ await db.from('n').delete().eq('id', id) }`
+  assert.equal(flag(both), 2, 'two unauthed actions → two findings')
+  // a shared auth helper whose name matches the auth heuristic still clears the action
+  const helper = `'use server'
+async function checkAuth(){ return getUser() }
+export async function add(){ await checkAuth(); await db.from('n').insert({}) }`
+  assert.equal(flag(helper), 0, 'a called auth helper clears the action')
+})

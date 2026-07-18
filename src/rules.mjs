@@ -310,14 +310,33 @@ function dbWrite(text) {
   return null
 }
 
+const EXPORT_FN = /export\s+(?:async\s+)?function\s+\w+|export\s+(?:const|let|var)\s+\w+\s*=/g
+
 export function scanServerAction(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
   if (!USE_SERVER.test(text)) return [] // not a Server Action file
-  const write = dbWrite(text)
-  if (!write) return [] // read-only action → nothing to guard
   const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
-  if (authRe.test(text)) return []
-  return [{ rule: 'unauth_server_action', severity: 'warn', file, line: lineOf(text, write.index), object: file, detail: `Server Action ('use server') writes to the database with no auth check — a Server Action is a client-callable mutation entry point, so confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` }]
+  // Slice the file into exported-function segments so an auth call in ONE action
+  // doesn't clear an unauthed write in ANOTHER (the file-level false negative).
+  // Each segment runs from one `export … function/const` to the next.
+  const starts = []
+  let e
+  EXPORT_FN.lastIndex = 0
+  while ((e = EXPORT_FN.exec(text))) starts.push(e.index)
+  const segments = starts.length ? starts.map((s, i) => [s, starts[i + 1] ?? text.length]) : [[0, text.length]]
+  const out = []
+  const seen = new Set()
+  for (const [a, b] of segments) {
+    const seg = text.slice(a, b)
+    const write = dbWrite(seg)
+    if (!write) continue // this action does no DB write → nothing to guard
+    if (authRe.test(seg)) continue // this action authenticates → clean
+    const line = lineOf(text, a + write.index)
+    if (seen.has(line)) continue
+    seen.add(line)
+    out.push({ rule: 'unauth_server_action', severity: 'warn', file, line, object: file, detail: `Server Action ('use server') writes to the database with no auth check — a Server Action is a client-callable mutation entry point, so confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
+  }
+  return out
 }
 
 function escapeRe(s) {

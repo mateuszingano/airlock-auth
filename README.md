@@ -58,12 +58,12 @@ Monitor):
   a secret hardcoded in client code or shipped some other way.
 - **Read handlers** (`GET`) — a `GET` that leaks data without auth is not flagged;
   only mutations are.
-- **Server Actions are judged file-level** — an auth call *anywhere* in a
-  `'use server'` file clears the whole file, so a file mixing an authed action
-  with an unauthed one can mask the unauthed write. Keep one action per file, or
-  review. The write signal covers Supabase/knex (`.from(...).insert/update/delete`),
-  Drizzle (`db.insert(...)`), Prisma (`prisma.x.create/update/delete`) and raw SQL —
-  a Supabase `.rpc('...')` write is not matched.
+- **Server Action write coverage** — each exported action is judged on its own
+  (an auth call in one action no longer clears another). The write signal covers
+  Supabase/knex (`.from(...).insert/update/delete`), Drizzle (`db.insert(...)`),
+  Prisma (`prisma.x.create/update/delete`) and executed raw SQL — a Supabase
+  `.rpc('...')` write (ambiguous: read or write) or another ORM's `.create()` is
+  not matched.
 
 ## In CI (GitHub Actions)
 
