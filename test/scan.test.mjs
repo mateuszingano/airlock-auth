@@ -236,12 +236,19 @@ test('#admin ADMIN keys/tokens are flagged even on an otherwise-public vendor', 
   }
 })
 
-test('#admin a non-secret ADMIN_* name is NOT flagged (no false positive)', () => {
-  for (const name of ['NEXT_PUBLIC_ADMIN_URL', 'NEXT_PUBLIC_ADMIN_EMAIL', 'NEXT_PUBLIC_ADMIN_PATH']) {
+test('#admin a non-secret ADMIN_*/SERVER_* name is NOT flagged (no false positive)', () => {
+  for (const name of ['NEXT_PUBLIC_ADMIN_URL', 'NEXT_PUBLIC_ADMIN_EMAIL', 'NEXT_PUBLIC_ADMIN_PATH', 'NEXT_PUBLIC_SERVER_URL']) {
     assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 0, `expected ${name} NOT flagged`)
   }
   // the public search key stays exempt
   assert.equal(scanSecrets('x = NEXT_PUBLIC_ALGOLIA_API_KEY', 'a.ts').length, 0)
+})
+
+test('#server a SERVER_KEY/SERVER_TOKEN (e.g. FCM) is a hard secret; a public WRITE key is not', () => {
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_FCM_SERVER_KEY', 'a.ts').length, 1)
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_FIREBASE_SERVER_TOKEN', 'a.ts').length, 1)
+  // WRITE is NOT barred — public analytics write keys are public by design
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_SEGMENT_WRITE_KEY', 'a.ts').length, 0)
 })
 
 // ---- P1 fix #3: allow-list must not silence via loose substring ----

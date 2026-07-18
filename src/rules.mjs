@@ -23,7 +23,7 @@ export const SECRETY = /SERVICE_ROLE|SERVICE_KEY|SECRET|PRIVATE|PASSWORD|PASSWD|
 // ALGOLIA_ADMIN_KEY, FIREBASE_ADMIN_TOKEN). `ADMIN_(KEY|TOKEN)` is admin
 // credentials by any vendor — a real leak — but plain ADMIN_URL / ADMIN_EMAIL is
 // not, so we require the KEY/TOKEN suffix rather than a bare ADMIN.
-const HARD_SECRET = /SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL|ADMIN[_-]?(?:KEY|TOKEN)/
+const HARD_SECRET = /SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL|(?:ADMIN|SERVER)[_-]?(?:KEY|TOKEN)/
 // …names that look scary but are public by design: anon / publishable / site keys,
 // analytics IDs, client-SDK config (Firebase, Google Maps, web-push VAPID), and
 // public client tokens/keys of common realtime/analytics/error SDKs. A CLIENT_TOKEN
