@@ -2,7 +2,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import { scanSecrets, scanRoute, scanPagesRoute, isRouteFile, isPagesApiFile, isEnvFile, isSourceFile } from './rules.mjs'
+import { scanSecrets, scanRoute, scanPagesRoute, scanServerAction, isRouteFile, isPagesApiFile, isEnvFile, isSourceFile } from './rules.mjs'
 
 const SKIP = new Set(['node_modules', '.next', '.git', 'dist', 'build', 'coverage', '.turbo', '.vercel'])
 
@@ -67,6 +67,9 @@ export async function scan({ dir, files, allow = [], authFns = [] } = {}) {
     }
     if (isRouteFile(file)) findings.push(...scanRoute(text, label, { authFns }))
     else if (isPagesApiFile(file)) findings.push(...scanPagesRoute(text, label, { authFns }))
+    // Server Actions can live in ANY source file — self-gated on a `'use server'`
+    // directive, so this is a no-op everywhere else.
+    findings.push(...scanServerAction(text, label, { authFns }))
   }
 
   const allowSet = allow.map((a) => a.toLowerCase()).filter(Boolean)

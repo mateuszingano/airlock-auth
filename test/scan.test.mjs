@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { writeFile, rm, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { scanSecrets, scanRoute, scanPagesRoute, isRouteFile, isPagesApiFile, routeUrl, pagesRouteUrl } from '../src/rules.mjs'
+import { scanSecrets, scanRoute, scanPagesRoute, scanServerAction, isRouteFile, isPagesApiFile, routeUrl, pagesRouteUrl } from '../src/rules.mjs'
 import { scan } from '../src/scan.mjs'
 import { levelOf, fixFor, enrich, toMarkdown } from '../src/report.mjs'
 
@@ -375,4 +375,19 @@ test('#1 an oversized file is skipped and reported (no silent cap, no scan)', as
   } finally {
     await rm(d, { recursive: true, force: true })
   }
+})
+
+// NEW COVERAGE (was declared "not covered yet"): a Server Action ('use server') is
+// a client-callable mutation entry point. A DB write with no auth check is flagged.
+test('#serveraction a use-server write with no auth is flagged; auth/read-only/non-action stay silent', () => {
+  const flag = (src) => scanServerAction(src, 'a.ts').length
+  // writes with no auth → flagged
+  assert.equal(flag(`'use server'\nexport async function add(fd){ await db.from('notes').insert({x:1}) }`), 1)
+  assert.equal(flag(`"use server"\nexport async function del(id){ await sb.from('t').delete().eq('id',id) }`), 1)
+  assert.equal(flag('\'use server\'\nexport async function upd(){ await sql`update t set x=1 where id=2` }'), 1)
+  // no false positives
+  assert.equal(flag(`'use server'\nexport async function add(){ const u = await getUser(); await db.from('n').insert({x:1}) }`), 0, 'auth present')
+  assert.equal(flag(`'use server'\nexport async function add(){ const u = await requireUser(); await db.from('n').insert({}) }`), 0, 'auth helper present')
+  assert.equal(flag(`'use server'\nexport async function list(){ return db.from('n').select('*') }`), 0, 'read-only action')
+  assert.equal(flag(`export async function add(){ await db.from('n').insert({}) }`), 0, 'not a Server Action (no directive)')
 })

@@ -270,6 +270,25 @@ export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
   return out
 }
 
+// A file (or function) marked `'use server'` exposes its exported functions as
+// client-callable mutation entry points — the SAME trust boundary as a route
+// handler, but reachable directly from a form/RPC. A read-only action stays silent;
+// one that performs a DB write with no auth check flags `unauth_server_action`
+// (warn), mirroring scanRoute. Write signals: a Supabase mutation
+// (.insert/.update/.delete/.upsert) or raw INSERT/UPDATE/DELETE.
+const USE_SERVER = /['"]use server['"]/
+const DB_WRITE = /\.(?:insert|update|delete|upsert)\s*\(|\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i
+
+export function scanServerAction(rawText, file, { authFns = [] } = {}) {
+  const text = stripJsComments(rawText)
+  if (!USE_SERVER.test(text)) return [] // not a Server Action file
+  const write = DB_WRITE.exec(text)
+  if (!write) return [] // read-only action → nothing to guard
+  const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
+  if (authRe.test(text)) return []
+  return [{ rule: 'unauth_server_action', severity: 'warn', file, line: lineOf(text, write.index), object: file, detail: `Server Action ('use server') writes to the database with no auth check — a Server Action is a client-callable mutation entry point, so confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` }]
+}
+
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

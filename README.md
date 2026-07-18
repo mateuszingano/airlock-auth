@@ -17,6 +17,7 @@ npx airlock-auth ./apps/web
 |------|-------|---------|
 | `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, master key, database URL, password, LLM-provider key) |
 | `unauth_mutation` | warn | a mutating route with no auth check — App Router `route.ts` **and** Pages Router `pages/api` |
+| `unauth_server_action` | warn | a Server Action (`'use server'`) that writes to the DB with no auth check |
 | `unverified_webhook` | warn | a webhook route that never verifies a signature |
 
 Only **fail** findings break the build. Warnings are printed for review.
@@ -49,8 +50,6 @@ Auth Route Guard covers the three highest-signal Next.js mistakes. These are
 **not** checked yet — review them yourself (or lean on runtime auth + the Airlock
 Monitor):
 
-- **Server Actions** (`'use server'`) — route handlers are covered (App Router
-  `route.ts` **and** Pages Router `pages/api`), but Server Actions are not yet.
 - **Authorization *correctness*** — it checks that an auth call is *present*, not
   that it's *right*. IDOR, tenant scoping and role checks are still on you.
 - **Auth via middleware only** — a route guarded by `middleware.ts` that never

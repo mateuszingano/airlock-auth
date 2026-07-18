@@ -51,6 +51,7 @@ Options:
 Rules:
   public_secret      (fail)  a server secret exposed via NEXT_PUBLIC_*
   unauth_mutation    (warn)  a POST/PUT/PATCH/DELETE route with no auth check
+  unauth_server_action (warn) a Server Action ('use server') that writes with no auth
   unverified_webhook (warn)  a webhook route with no signature verification
 
 Exit codes: 0 = passed, 1 = exposed secret, 2 = usage error.`
