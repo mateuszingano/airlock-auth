@@ -15,7 +15,7 @@ npx airlock-auth ./apps/web
 
 | Rule | Level | Catches |
 |------|-------|---------|
-| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, password, LLM-provider key) |
+| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, master key, database URL, password, LLM-provider key) |
 | `unauth_mutation` | warn | a mutating route with no auth check — App Router `route.ts` **and** Pages Router `pages/api` |
 | `unverified_webhook` | warn | a webhook route that never verifies a signature |
 
@@ -35,6 +35,13 @@ on such a vendor — so `FIREBASE_PRIVATE_KEY`, `PADDLE_CLIENT_SECRET`,
 not. (A public analytics **write** key like `SEGMENT_WRITE_KEY` is intentionally
 NOT barred — those are public by design.) Read-only `GET` handlers are ignored,
 and a webhook is judged on its signature check, not on "missing auth".
+
+**Case-insensitive on the suffix.** Only the `NEXT_PUBLIC_` prefix is matched
+exactly (Next.js inlines that spelling and no other); the suffix is matched
+case-insensitively — screaming-snake, lower, or camelCase all count. A camelCase
+name with no separators (`NEXT_PUBLIC_serviceRoleKey`, `NEXT_PUBLIC_apiKey`) is
+split at its word boundaries and normalized (`SERVICE_ROLE_KEY`, `API_KEY`) before
+matching, so a secret can't dodge the gate by dropping its underscores.
 
 ## What it does *not* cover yet
 

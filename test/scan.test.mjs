@@ -272,6 +272,36 @@ test('#case a mixed/lower-case NEXT_PUBLIC_ secret name is still caught (case by
   assert.equal(scanSecrets('x = NEXT_PUBLIC_supabase_anon_key', 'a.ts').length, 0)
 })
 
+// BYPASS (re-audit → 7.5): a camelCase suffix with NO separators (serviceRoleKey)
+// used to survive .toUpperCase() as SERVICEROLEKEY — matched no snake_case pattern
+// → a real secret leaked past the gate. normalizeSuffix now camel-splits first.
+test('#camel a camelCase NEXT_PUBLIC_ secret (no separators) is caught — bypass closed', () => {
+  for (const name of ['NEXT_PUBLIC_serviceRoleKey', 'NEXT_PUBLIC_ServiceRoleKey', 'NEXT_PUBLIC_SERVICE_ROLE_KEY']) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 1, `expected ${name} FLAGGED (camelCase bypass)`)
+  }
+  // camelCase public config stays exempt after camel-split (supabaseAnonKey → ANON_KEY)
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_supabaseAnonKey', 'a.ts').length, 0)
+})
+
+// New known-secret patterns: MASTER_KEY (root cred, beats PUBLIC_OK), DATABASE_URL
+// (a bare Postgres URL embeds the password), and APIKEY with no separator.
+test('#patterns MASTER_KEY / DATABASE_URL / APIKEY are flagged (screaming + camelCase)', () => {
+  for (const name of [
+    'NEXT_PUBLIC_MASTER_KEY', 'NEXT_PUBLIC_masterKey', 'NEXT_PUBLIC_ALGOLIA_MASTER_KEY',
+    'NEXT_PUBLIC_DATABASE_URL', 'NEXT_PUBLIC_databaseUrl',
+    'NEXT_PUBLIC_APIKEY', 'NEXT_PUBLIC_apiKey',
+  ]) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 1, `expected ${name} FLAGGED`)
+  }
+})
+
+test('#patterns a genuinely public DATABASE_URL (Firebase) stays exempt, and no over-match', () => {
+  // Firebase's Realtime DB URL is public by design → PUBLIC_OK still waves it through.
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_FIREBASE_DATABASE_URL', 'a.ts').length, 0)
+  // APIKEY (no separator) must not swallow the public STREAM_API_KEY (has a separator).
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_STREAM_API_KEY', 'a.ts').length, 0)
+})
+
 // ---- P1 fix #3: allow-list must not silence via loose substring ----
 test('#3 --allow key does NOT silence a real secret (fails need an exact name)', async () => {
   const r = await scan({ dir: fxDir, allow: ['key'] })
