@@ -276,13 +276,34 @@ export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
 // one that performs a DB write with no auth check flags `unauth_server_action`
 // (warn), mirroring scanRoute. Write signals: a Supabase mutation
 // (.insert/.update/.delete/.upsert) or raw INSERT/UPDATE/DELETE.
-const USE_SERVER = /['"]use server['"]/
-const DB_WRITE = /\.(?:insert|update|delete|upsert)\s*\(|\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i
+// The directive as its OWN statement (file-level or fn-level), never a string value
+// — so `const label = "use server"` or a doc example doesn't turn a file into an action.
+const USE_SERVER = /^\s*(['"])use server\1\s*;?\s*$/m
+// A DB write, ANCHORED to a real database handle so a same-named method on
+// cookies()/formData/headers()/a Map (`cookies().delete('session')` in a logout) is
+// NOT mistaken for one — that false alarm is the whole thing this product refuses:
+//  - Supabase / knex:  `.from(...) … .insert/.update/.delete/.del/.upsert(`
+//  - Drizzle:          `db.insert/.update/.delete(`
+//  - Prisma:           `prisma.model.create/update/delete/upsert(` (+ *Many)
+//  - raw SQL:          INSERT INTO / UPDATE … SET / DELETE FROM
+const DB_WRITE_PATTERNS = [
+  /\.from\([^)]*\)[\s\S]{0,200}?\.(?:insert|update|delete|del|upsert)\s*\(/i,
+  /\bdb\.(?:insert|update|delete)\s*\(/i,
+  /\bprisma\.\w+\.(?:create|createMany|update|updateMany|delete|deleteMany|upsert)\s*\(/i,
+  /\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,
+]
+function dbWrite(text) {
+  for (const re of DB_WRITE_PATTERNS) {
+    const m = re.exec(text)
+    if (m) return m
+  }
+  return null
+}
 
 export function scanServerAction(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
   if (!USE_SERVER.test(text)) return [] // not a Server Action file
-  const write = DB_WRITE.exec(text)
+  const write = dbWrite(text)
   if (!write) return [] // read-only action → nothing to guard
   const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
   if (authRe.test(text)) return []

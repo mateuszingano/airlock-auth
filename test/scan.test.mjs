@@ -385,9 +385,15 @@ test('#serveraction a use-server write with no auth is flagged; auth/read-only/n
   assert.equal(flag(`'use server'\nexport async function add(fd){ await db.from('notes').insert({x:1}) }`), 1)
   assert.equal(flag(`"use server"\nexport async function del(id){ await sb.from('t').delete().eq('id',id) }`), 1)
   assert.equal(flag('\'use server\'\nexport async function upd(){ await sql`update t set x=1 where id=2` }'), 1)
-  // no false positives
+  assert.equal(flag(`'use server'\nexport async function u(){ await prisma.user.delete({ where:{ id } }) }`), 1, 'prisma write')
+  // no false positives — the write must be a REAL db write, not a same-named method
   assert.equal(flag(`'use server'\nexport async function add(){ const u = await getUser(); await db.from('n').insert({x:1}) }`), 0, 'auth present')
   assert.equal(flag(`'use server'\nexport async function add(){ const u = await requireUser(); await db.from('n').insert({}) }`), 0, 'auth helper present')
   assert.equal(flag(`'use server'\nexport async function list(){ return db.from('n').select('*') }`), 0, 'read-only action')
   assert.equal(flag(`export async function add(){ await db.from('n').insert({}) }`), 0, 'not a Server Action (no directive)')
+  // the adoption-killer FPs: same-named method on cookies/formData/Map/etc is NOT a db write
+  assert.equal(flag(`'use server'\nexport async function logout(){ cookies().delete('session') }`), 0, 'cookies().delete (logout)')
+  assert.equal(flag(`'use server'\nexport async function f(fd){ fd.delete('x'); await noop() }`), 0, 'formData.delete')
+  assert.equal(flag(`'use server'\nexport async function f(){ headers().delete('h'); myMap.delete(k) }`), 0, 'headers/Map .delete')
+  assert.equal(flag(`const label = "use server"\nexport async function f(){ await db.from('t').insert({}) }`), 0, 'string literal, not a directive')
 })
