@@ -396,4 +396,10 @@ test('#serveraction a use-server write with no auth is flagged; auth/read-only/n
   assert.equal(flag(`'use server'\nexport async function f(fd){ fd.delete('x'); await noop() }`), 0, 'formData.delete')
   assert.equal(flag(`'use server'\nexport async function f(){ headers().delete('h'); myMap.delete(k) }`), 0, 'headers/Map .delete')
   assert.equal(flag(`const label = "use server"\nexport async function f(){ await db.from('t').insert({}) }`), 0, 'string literal, not a directive')
+  // the write must be in the SAME chain as .from() — a read then an unrelated
+  // cookie/formData .delete() must NOT bridge into a false alarm
+  assert.equal(flag(`'use server'\nexport async function logout(){ await sb.from('u').select('name'); cookies().delete('sb') }`), 0, 'read + clear-cookie (no bridge)')
+  assert.equal(flag(`'use server'\nexport async function f(fd){ await sb.from('u').select('id'); fd.delete('csrf') }`), 0, 'read + formData.delete (no bridge)')
+  // knex idiom still caught
+  assert.equal(flag(`'use server'\nexport async function del(id){ await knex('users').where({ id }).del() }`), 1, 'knex write')
 })

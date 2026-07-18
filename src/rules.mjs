@@ -286,11 +286,16 @@ const USE_SERVER = /^\s*(['"])use server\1\s*;?\s*$/m
 //  - Drizzle:          `db.insert/.update/.delete(`
 //  - Prisma:           `prisma.model.create/update/delete/upsert(` (+ *Many)
 //  - raw SQL:          INSERT INTO / UPDATE … SET / DELETE FROM
+// The write method must be in the SAME method chain as `.from(...)` / `knex(...)` —
+// `(?:\s*\.\w+\([^)]*\))*?` walks only continuous `.foo(...)` links, so it can't hop a
+// `;`/new statement to a `.delete(` on cookies()/formData() sitting nearby. That
+// "read, then clear a cookie" shape is common and must stay silent.
 const DB_WRITE_PATTERNS = [
-  /\.from\([^)]*\)[\s\S]{0,200}?\.(?:insert|update|delete|del|upsert)\s*\(/i,
-  /\bdb\.(?:insert|update|delete)\s*\(/i,
-  /\bprisma\.\w+\.(?:create|createMany|update|updateMany|delete|deleteMany|upsert)\s*\(/i,
-  /\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,
+  /\.from\([^)]*\)(?:\s*\.\w+\([^)]*\))*?\s*\.(?:insert|update|delete|del|upsert)\s*\(/i, // supabase/knex .from('t')…write
+  /\bknex\([^)]*\)(?:\s*\.\w+\([^)]*\))*?\s*\.(?:insert|update|delete|del)\s*\(/i,        // knex('t')…write
+  /\bdb\.(?:insert|update|delete)\s*\(/i,                                                 // drizzle
+  /\bprisma\.\w+\.(?:create|createMany|update|updateMany|delete|deleteMany|upsert)\s*\(/i, // prisma
+  /\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,                          // raw SQL
 ]
 function dbWrite(text) {
   for (const re of DB_WRITE_PATTERNS) {
