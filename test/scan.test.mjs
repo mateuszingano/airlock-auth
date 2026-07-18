@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
+import { writeFile, rm, mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { scanSecrets, scanRoute, scanPagesRoute, isRouteFile, isPagesApiFile, routeUrl, pagesRouteUrl } from '../src/rules.mjs'
 import { scan } from '../src/scan.mjs'
 import { levelOf, fixFor, enrich, toMarkdown } from '../src/report.mjs'
@@ -202,4 +205,65 @@ test('allow-list silences a route by path and passes on secrets', async () => {
   assert.equal(r.passed, true)
   assert.equal(r.findings.length, 0)
   assert.ok(r.allowed.length >= 3)
+})
+
+// ---- P1 fix #2: public client tokens/keys must not cry wolf ----
+test('#2 NEXT_PUBLIC_PADDLE_CLIENT_TOKEN is public by design — NOT flagged', () => {
+  assert.equal(scanSecrets('const t = process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'a.ts').length, 0)
+})
+
+test('#2 common public client-SDK tokens/keys are NOT flagged', () => {
+  for (const name of [
+    'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'NEXT_PUBLIC_STREAM_API_KEY', 'NEXT_PUBLIC_ALGOLIA_API_KEY',
+    'NEXT_PUBLIC_LIVEKIT_URL', 'NEXT_PUBLIC_SENTRY_DSN', 'NEXT_PUBLIC_SEGMENT_WRITE_KEY',
+    'NEXT_PUBLIC_LIVEBLOCKS_PUBLIC_KEY',
+  ]) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 0, `expected ${name} NOT flagged`)
+  }
+})
+
+test('#2 a real CLIENT_SECRET is still flagged (HARD_SECRET wins over CLIENT_TOKEN exemption)', () => {
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_PADDLE_CLIENT_SECRET', 'a.ts').length, 1)
+})
+
+// ---- P1 fix #3: allow-list must not silence via loose substring ----
+test('#3 --allow key does NOT silence a real secret (fails need an exact name)', async () => {
+  const r = await scan({ dir: fxDir, allow: ['key'] })
+  assert.equal(r.passed, false)
+  assert.ok(r.findings.some((f) => f.rule === 'public_secret'), 'the service-role secret must still fail')
+})
+
+test('#3 an exact secret name still silences it', async () => {
+  const r = await scan({ dir: fxDir, allow: ['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY'] })
+  assert.ok(!r.findings.some((f) => f.rule === 'public_secret'))
+  assert.ok(r.allowed.some((f) => f.rule === 'public_secret'))
+})
+
+test('#3 rule:public_secret silences the whole class deliberately', async () => {
+  const r = await scan({ dir: fxDir, allow: ['rule:public_secret'] })
+  assert.ok(!r.findings.some((f) => f.rule === 'public_secret'))
+})
+
+// ---- P1 fix #1: ReDoS bound + file-size cap ----
+test('#1 the auth regex is bounded — a huge word-char run scans fast (ReDoS guard)', () => {
+  const big = 'export async function POST(){}\n' + 'const x = require' + 'a'.repeat(200_000)
+  const start = Date.now()
+  const f = scanRoute(big, 'app/api/x/route.ts')
+  const ms = Date.now() - start
+  assert.ok(ms < 1000, `auth scan took ${ms}ms — expected < 1000ms (ReDoS guard)`)
+  assert.equal(f.filter((x) => x.rule === 'unauth_mutation').length, 1) // still correctly flagged
+})
+
+test('#1 an oversized file is skipped and reported (no silent cap, no scan)', async () => {
+  const d = await mkdtemp(join(tmpdir(), 'authguard-'))
+  try {
+    const big = join(d, 'route.ts')
+    // >1MB AND it contains a would-be secret — proving it's skipped, not just clean
+    await writeFile(big, 'const k = process.env.NEXT_PUBLIC_STRIPE_SECRET;\n' + '// filler\n'.repeat(150_000))
+    const r = await scan({ files: [big] })
+    assert.equal(r.findings.length, 0)
+    assert.equal(r.skipped.length, 1)
+  } finally {
+    await rm(d, { recursive: true, force: true })
+  }
 })

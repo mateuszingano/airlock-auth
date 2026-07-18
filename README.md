@@ -25,10 +25,13 @@ Only **fail** findings break the build. Warnings are printed for review.
 (API key, token, access key, service role, secret, password, LLM-provider key) is
 flagged; names that are public on purpose — `ANON_KEY`, `PUBLISHABLE`, `MAPBOX`,
 Google Maps / Firebase client config, web-push `VAPID`, `TURNSTILE`, analytics /
-site keys — are *not*. A strong secret word (`PRIVATE`, `SECRET`, `SIGNING`,
-`ENCRYPTION`) is always flagged, even on such a vendor (so `FIREBASE_PRIVATE_KEY`
-is caught while `FIREBASE_API_KEY` is not). Read-only `GET` handlers are ignored,
-and a webhook is judged on its signature check, not on "missing auth".
+site keys, and public client tokens/keys of common SDKs (Paddle `CLIENT_TOKEN`,
+Stream, Algolia, LiveKit, Liveblocks public key, Segment write key, Sentry DSN) —
+are *not*. A strong secret word (`PRIVATE`, `SECRET`, `SIGNING`, `ENCRYPTION`) is
+always flagged, even on such a vendor (so `FIREBASE_PRIVATE_KEY` and
+`PADDLE_CLIENT_SECRET` are caught while `FIREBASE_API_KEY` and
+`PADDLE_CLIENT_TOKEN` are not). Read-only `GET` handlers are ignored, and a
+webhook is judged on its signature check, not on "missing auth".
 
 ## What it does *not* cover yet
 
@@ -68,6 +71,18 @@ finding by route path, env name, or rule:
 airlock-auth --allow "/api/health,rule:unauth_mutation"
 # or: AUTH_GUARD_ALLOW=/api/health airlock-auth
 ```
+
+Matching is deliberately precise so one loose token can't hide unrelated leaks:
+
+- **`rule:<name>`** silences a whole rule (e.g. `rule:unauth_mutation`).
+- **A secret (fail)** needs the **exact** env name — `--allow key` will **not**
+  silence every secret whose name contains "key"; pass the full
+  `NEXT_PUBLIC_…_KEY`.
+- **A route (warn)** matches by **path** — a token starting with `/`
+  (`/api/health`) silences that route.
+
+Oversized files (generated/minified, > 1 MB) are skipped for bounded scan time
+and listed in the report's `skipped` — never dropped silently.
 
 ## Exit codes
 

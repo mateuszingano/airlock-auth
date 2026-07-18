@@ -22,8 +22,11 @@ export const SECRETY = /SERVICE_ROLE|SERVICE_KEY|SECRET|PRIVATE|PASSWORD|PASSWD|
 // vendor whose other NEXT_PUBLIC_ keys are public (e.g. FIREBASE_PRIVATE_KEY).
 const HARD_SECRET = /SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL/
 // …names that look scary but are public by design: anon / publishable / site keys,
-// analytics IDs, and client-SDK config (Firebase, Google Maps, web-push VAPID).
-const PUBLIC_OK = /ANON|PUBLISHABLE|SITE_KEY|CLIENT_ID|MEASUREMENT_ID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA_SEARCH|POSTHOG|FIREBASE|VAPID/
+// analytics IDs, client-SDK config (Firebase, Google Maps, web-push VAPID), and
+// public client tokens/keys of common realtime/analytics/error SDKs. A CLIENT_TOKEN
+// (e.g. Paddle's — the stack ShipSealed itself sells on) is public by design; a
+// CLIENT_SECRET is not, and stays caught by HARD_SECRET.
+const PUBLIC_OK = /ANON|PUBLISHABLE|SITE_KEY|CLIENT_ID|CLIENT_TOKEN|MEASUREMENT_ID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAM_API_KEY|GETSTREAM|LIVEKIT|LIVEBLOCKS_PUBLIC|SEGMENT_WRITE|SENTRY_DSN/
 
 // A mutating export in an App Router route handler.
 const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|PUT|PATCH|DELETE)\b/g
@@ -36,7 +39,13 @@ const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|P
 // (requireUser, resolverAcessoEscrita, ensureSession…). NOTE: a bare `get` prefix
 // is deliberately NOT in that group — it would treat getUserAgent / getUserId
 // (a header read / a lookup) as auth and miss a real unguarded route.
-const AUTH = /getUser\s*\(|getSession\s*\(|getServerSession|currentUser\s*\(|getAuth\s*\(|\bauth\s*\(\s*\)|isAuthenticated|getToken\s*\(|\.auth\b|(?:require|ensure|assert|check|verify|resolve|guard|with)\w*(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)/i
+//
+// ReDoS-safe: the helper alternation is anchored at a word boundary and the gap
+// between the prefix and the auth-noun is bounded to \w{0,40} (was an unbounded
+// \w*). Unbounded, a long run of word-chars with no trailing noun backtracked
+// catastrophically — measured O(n²): 240KB→7.5s, 960KB→143s. The bound makes
+// per-position work constant; scan.mjs also caps file size (see MAX_FILE_BYTES).
+const AUTH = /getUser\s*\(|getSession\s*\(|getServerSession|currentUser\s*\(|getAuth\s*\(|\bauth\s*\(\s*\)|isAuthenticated|getToken\s*\(|\.auth\b|\b(?:require|ensure|assert|check|verify|resolve|guard|with)\w{0,40}(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)/i
 
 // Signals that a webhook verifies its payload signature.
 const SIGVERIFY = /signature|verif(?:y|ied|ication)|hmac|constructEvent|svix|createHmac|timingSafeEqual|paddle-signature|stripe-signature/i
