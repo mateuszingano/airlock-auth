@@ -402,4 +402,9 @@ test('#serveraction a use-server write with no auth is flagged; auth/read-only/n
   assert.equal(flag(`'use server'\nexport async function f(fd){ await sb.from('u').select('id'); fd.delete('csrf') }`), 0, 'read + formData.delete (no bridge)')
   // knex idiom still caught
   assert.equal(flag(`'use server'\nexport async function del(id){ await knex('users').where({ id }).del() }`), 1, 'knex write')
+  // raw SQL only counts when EXECUTED (tagged template / .query()), not English prose
+  assert.equal(flag(`'use server'\nexport async function f(){ await sb.from('t').select('*'); return 'You can delete from your list' }`), 0, 'english "delete from" in a string')
+  assert.equal(flag(`'use server'\nexport async function f(){ await sb.from('t').select('*'); throw new Error('Failed to delete from cache') }`), 0, 'english in an Error')
+  assert.equal(flag('\'use server\'\nexport async function f(){ await sql`delete from t where id=1` }'), 1, 'sql`` tagged template')
+  assert.equal(flag(`'use server'\nexport async function f(){ await db.query('delete from users where id=$1',[id]) }`), 1, 'db.query() raw')
 })

@@ -295,7 +295,12 @@ const DB_WRITE_PATTERNS = [
   /\bknex\([^)]*\)(?:\s*\.\w+\([^)]*\))*?\s*\.(?:insert|update|delete|del)\s*\(/i,        // knex('t')…write
   /\bdb\.(?:insert|update|delete)\s*\(/i,                                                 // drizzle
   /\bprisma\.\w+\.(?:create|createMany|update|updateMany|delete|deleteMany|upsert)\s*\(/i, // prisma
-  /\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,                          // raw SQL
+  // raw SQL, but ONLY where it's actually EXECUTED — a SQL tagged template
+  // (sql`…`, db`…`, prisma.$executeRaw`…`) or a .query()/.execute()/.raw()/.unsafe()
+  // call — so an English phrase in a toast/error string ("delete from your list")
+  // is NOT mistaken for a write.
+  /\b(?:sql|db|pool|client|conn|connection|executeRaw|queryRaw)\s*`[^`]*?\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,
+  /\.(?:query|execute|executeRaw|raw|unsafe|prepare)\s*\(\s*[`'"][^`'"]*?\b(?:insert\s+into|update\s+[\w."]+\s+set|delete\s+from)\b/i,
 ]
 function dbWrite(text) {
   for (const re of DB_WRITE_PATTERNS) {
