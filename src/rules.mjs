@@ -18,9 +18,12 @@
 // The LLM vendors are matched as `<vendor>_?KEY` (never a bare `_KEY`, so a public
 // app key like PUSHER_KEY or a Supabase ANON_KEY is not swept in by accident).
 export const SECRETY = /SERVICE_ROLE|SERVICE_KEY|SECRET|PRIVATE|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|CREDENTIAL|TOKEN|ENCRYPTION|SIGNING|(?:ANTHROPIC|OPENAI|OPENROUTER|GROQ|MISTRAL|COHERE|REPLICATE|HUGGINGFACE|PERPLEXITY|DEEPSEEK|TOGETHER|GEMINI|XAI)_?KEY/
-// Strong secret words a public allow-list must NEVER wave through — even on a
-// vendor whose other NEXT_PUBLIC_ keys are public (e.g. FIREBASE_PRIVATE_KEY).
-const HARD_SECRET = /SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL/
+// Strong secret words the PUBLIC_OK allow-list must NEVER wave through — even on a
+// vendor whose other NEXT_PUBLIC_ keys are public (FIREBASE_PRIVATE_KEY,
+// ALGOLIA_ADMIN_KEY, FIREBASE_ADMIN_TOKEN). `ADMIN_(KEY|TOKEN)` is admin
+// credentials by any vendor — a real leak — but plain ADMIN_URL / ADMIN_EMAIL is
+// not, so we require the KEY/TOKEN suffix rather than a bare ADMIN.
+const HARD_SECRET = /SERVICE_ROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|ENCRYPTION|CREDENTIAL|ADMIN[_-]?(?:KEY|TOKEN)/
 // …names that look scary but are public by design: anon / publishable / site keys,
 // analytics IDs, client-SDK config (Firebase, Google Maps, web-push VAPID), and
 // public client tokens/keys of common realtime/analytics/error SDKs. A CLIENT_TOKEN

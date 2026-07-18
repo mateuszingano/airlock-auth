@@ -226,6 +226,24 @@ test('#2 a real CLIENT_SECRET is still flagged (HARD_SECRET wins over CLIENT_TOK
   assert.equal(scanSecrets('x = NEXT_PUBLIC_PADDLE_CLIENT_SECRET', 'a.ts').length, 1)
 })
 
+// P3 re-audit: an ADMIN key/token on a "public" vendor is still a real leak.
+test('#admin ADMIN keys/tokens are flagged even on an otherwise-public vendor', () => {
+  for (const name of [
+    'NEXT_PUBLIC_ALGOLIA_ADMIN_KEY', 'NEXT_PUBLIC_FIREBASE_ADMIN_TOKEN',
+    'NEXT_PUBLIC_ADMIN_KEY', 'NEXT_PUBLIC_SUPABASE_ADMIN_TOKEN',
+  ]) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 1, `expected ${name} FLAGGED (admin credential)`)
+  }
+})
+
+test('#admin a non-secret ADMIN_* name is NOT flagged (no false positive)', () => {
+  for (const name of ['NEXT_PUBLIC_ADMIN_URL', 'NEXT_PUBLIC_ADMIN_EMAIL', 'NEXT_PUBLIC_ADMIN_PATH']) {
+    assert.equal(scanSecrets(`x = ${name}`, 'a.ts').length, 0, `expected ${name} NOT flagged`)
+  }
+  // the public search key stays exempt
+  assert.equal(scanSecrets('x = NEXT_PUBLIC_ALGOLIA_API_KEY', 'a.ts').length, 0)
+})
+
 // ---- P1 fix #3: allow-list must not silence via loose substring ----
 test('#3 --allow key does NOT silence a real secret (fails need an exact name)', async () => {
   const r = await scan({ dir: fxDir, allow: ['key'] })

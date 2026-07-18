@@ -27,11 +27,12 @@ flagged; names that are public on purpose — `ANON_KEY`, `PUBLISHABLE`, `MAPBOX
 Google Maps / Firebase client config, web-push `VAPID`, `TURNSTILE`, analytics /
 site keys, and public client tokens/keys of common SDKs (Paddle `CLIENT_TOKEN`,
 Stream, Algolia, LiveKit, Liveblocks public key, Segment write key, Sentry DSN) —
-are *not*. A strong secret word (`PRIVATE`, `SECRET`, `SIGNING`, `ENCRYPTION`) is
-always flagged, even on such a vendor (so `FIREBASE_PRIVATE_KEY` and
-`PADDLE_CLIENT_SECRET` are caught while `FIREBASE_API_KEY` and
-`PADDLE_CLIENT_TOKEN` are not). Read-only `GET` handlers are ignored, and a
-webhook is judged on its signature check, not on "missing auth".
+are *not*. A strong secret word (`PRIVATE`, `SECRET`, `SIGNING`, `ENCRYPTION`, or
+an `ADMIN_KEY` / `ADMIN_TOKEN`) is always flagged, even on such a vendor — so
+`FIREBASE_PRIVATE_KEY`, `PADDLE_CLIENT_SECRET`, `ALGOLIA_ADMIN_KEY` and
+`FIREBASE_ADMIN_TOKEN` are caught, while `FIREBASE_API_KEY`, `PADDLE_CLIENT_TOKEN`
+and a plain `ADMIN_URL`/`ADMIN_EMAIL` are not. Read-only `GET` handlers are
+ignored, and a webhook is judged on its signature check, not on "missing auth".
 
 ## What it does *not* cover yet
 
