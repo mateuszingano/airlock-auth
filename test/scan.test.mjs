@@ -427,3 +427,83 @@ async function checkAuth(){ return getUser() }
 export async function add(){ await checkAuth(); await db.from('n').insert({}) }`
   assert.equal(flag(helper), 0, 'a called auth helper clears the action')
 })
+
+// ---- Re-audit fixes (19/07): the exact cases the adversarial audit proved ----
+
+test('AUDIT-FIX: a vendor browser key does NOT break the build (no false alarm)', () => {
+  // These are public BY DESIGN in the vendor's own docs. Failing CI on them is
+  // what gets the gate uninstalled on day one.
+  for (const name of [
+    'NEXT_PUBLIC_MIXPANEL_TOKEN',
+    'NEXT_PUBLIC_CONTENTFUL_ACCESS_TOKEN',
+    'NEXT_PUBLIC_AMPLITUDE_API_KEY',
+    'NEXT_PUBLIC_BUGSNAG_API_KEY',
+    'NEXT_PUBLIC_UNSPLASH_ACCESS_KEY',
+    'NEXT_PUBLIC_GIPHY_API_KEY',
+    'NEXT_PUBLIC_TINYMCE_API_KEY',
+    'NEXT_PUBLIC_CLARITY_TOKEN',
+  ]) {
+    const f = scanSecrets(`const k = process.env.${name}`, 'a.ts')
+    assert.ok(!f.some((x) => x.severity === 'fail'), `${name} must not FAIL the build`)
+  }
+})
+
+test('AUDIT-FIX: an unambiguous secret still FAILS', () => {
+  for (const name of [
+    'NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY',
+    'NEXT_PUBLIC_STRIPE_SECRET_KEY',
+    'NEXT_PUBLIC_FIREBASE_PRIVATE_KEY',
+    'NEXT_PUBLIC_ALGOLIA_ADMIN_KEY',
+  ]) {
+    const f = scanSecrets(`const k = process.env.${name}`, 'a.ts')
+    assert.ok(f.some((x) => x.severity === 'fail'), `${name} must FAIL the build`)
+  }
+})
+
+test('AUDIT-FIX: a generic unknown API key is a WARN, not a silent pass', () => {
+  const f = scanSecrets('const k = process.env.NEXT_PUBLIC_WIDGETCO_API_KEY', 'a.ts')
+  assert.equal(f.length, 1)
+  assert.equal(f[0].severity, 'warn')
+})
+
+test('AUDIT-FIX: reading the signature header is NOT verifying it', () => {
+  // The audit's probe: reads `paddle-signature`, then trusts the body anyway.
+  const src = `export async function POST(req){ const signature = req.headers.get('paddle-signature'); const e = await req.json(); await fulfill(e); return Response.json({ok:true}) }`
+  const f = scanRoute(src, 'app/api/webhooks/paddle/route.ts')
+  assert.ok(f.some((x) => x.rule === 'unverified_webhook'), 'merely reading the header must still be flagged')
+})
+
+test('AUDIT-FIX: a real verification clears the webhook', () => {
+  for (const body of [
+    `const ok = crypto.createHmac('sha256', secret).update(raw).digest('hex')`,
+    `const event = stripe.webhooks.constructEvent(raw, sig, secret)`,
+    `const evt = wh.verify(payload, headers)`,
+    `if (!timingSafeEqual(a, b)) return new Response('bad', {status:401})`,
+  ]) {
+    const src = `export async function POST(req){ ${body}; return Response.json({ok:true}) }`
+    const f = scanRoute(src, 'app/api/webhooks/x/route.ts')
+    assert.ok(!f.some((x) => x.rule === 'unverified_webhook'), `should be clean: ${body}`)
+  }
+})
+
+test('AUDIT-FIX: an auth signal that only lives in a STRING does not clear a route', () => {
+  const src = `export async function POST(req){ console.log("track user.auth event"); await db.insert(x); return Response.json({}) }`
+  const f = scanRoute(src, 'app/api/notes/route.ts')
+  assert.ok(f.some((x) => x.rule === 'unauth_mutation'), 'a string mention is not an auth check')
+})
+
+test('AUDIT-FIX: common auth helpers do not cry wolf', () => {
+  for (const call of ['authorize(user, "write")', 'protectRoute(req)', 'restrictTo("admin")(req)', 'can(user, "edit")']) {
+    const src = `export async function POST(req){ await ${call}; await db.insert(x); return Response.json({}) }`
+    const f = scanRoute(src, 'app/api/notes/route.ts')
+    assert.ok(!f.some((x) => x.rule === 'unauth_mutation'), `should be clean: ${call}`)
+  }
+})
+
+test('AUDIT-FIX: a provider-qualified callback is a webhook; a bare OAuth callback is not', () => {
+  const unverified = `export async function POST(req){ const e = await req.json(); await fulfill(e); return Response.json({}) }`
+  const asWebhook = scanRoute(unverified, 'app/api/stripe/callback/route.ts')
+  assert.ok(asWebhook.some((x) => x.rule === 'unverified_webhook'), '/api/stripe/callback IS a webhook')
+  const oauth = scanRoute(unverified, 'app/auth/callback/route.ts')
+  assert.ok(!oauth.some((x) => x.rule === 'unverified_webhook'), '/auth/callback is the OAuth leg, not a webhook')
+})

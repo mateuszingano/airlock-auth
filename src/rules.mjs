@@ -58,7 +58,10 @@ const HARD_SECRET = /(?:(?:SERVICEROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|EN
 // lenient (no trailing anchor) because these are EXEMPTIONS and HARD_SECRET is
 // checked first, so a real secret on a "public" vendor (FIREBASE_PRIVATE_KEY,
 // ALGOLIA_ADMIN_KEY) is still caught regardless of a PUBLIC_OK match.
-const PUBLIC_OK = /ANON|PUBLISHABLE|SITEKEY|CLIENTID|CLIENTTOKEN|MEASUREMENTID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAMAPIKEY|GETSTREAM|LIVEKIT|LIVEBLOCKSPUBLIC|SEGMENTWRITE|SENTRYDSN/
+// Vendors whose browser SDK key/token is public BY DESIGN (their docs put it in
+// the client). Flagging these as a build-breaking secret is the false alarm that
+// makes a team uninstall the gate on its first run.
+const PUBLIC_OK = /ANON|PUBLISHABLE|SITEKEY|CLIENTID|CLIENTTOKEN|MEASUREMENTID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAMAPIKEY|GETSTREAM|LIVEKIT|LIVEBLOCKSPUBLIC|SEGMENTWRITE|SENTRYDSN|MIXPANEL|AMPLITUDE|CONTENTFUL|CLARITY|BUGSNAG|GIPHY|TINYMCE|UNSPLASH|INTERCOM|CRISP|HOTJAR|PLAUSIBLE|FATHOM|GOOGLETAG|GTM|PUSHER|ABLY|PADDLE|STRIPEPUBLISH/
 
 // A mutating export in an App Router route handler.
 const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|PUT|PATCH|DELETE)\b/g
@@ -77,10 +80,29 @@ const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|P
 // \w*). Unbounded, a long run of word-chars with no trailing noun backtracked
 // catastrophically — measured O(n²): 240KB→7.5s, 960KB→143s. The bound makes
 // per-position work constant; scan.mjs also caps file size (see MAX_FILE_BYTES).
-const AUTH = /getUser\s*\(|getSession\s*\(|getServerSession|currentUser\s*\(|getAuth\s*\(|\bauth\s*\(\s*\)|isAuthenticated|getToken\s*\(|\.auth\b|\b(?:require|ensure|assert|check|verify|resolve|guard|with)\w{0,40}(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)/i
+// NOTE: tested against string-blanked code (see stripJsComments's blankStrings),
+// so a signal that only appears inside a string literal never counts.
+// `getToken(` and a bare `.auth` were REMOVED: both are overloaded (a CSRF/captcha
+// token read, an unrelated `.auth` property) and silently cleared real unguarded
+// routes. `.auth` now requires an actual method call (supabase.auth.getUser()).
+const AUTH = /getUser\s*\(|getSession\s*\(|getServerSession|currentUser\s*\(|getAuth\s*\(|\bauth\s*\(\s*\)|isAuthenticated|\.auth\.\w+\s*\(|\b(?:authorize|protectRoute|protect|restrictTo|mustBeLoggedIn|can)\s*\(|\b(?:require|ensure|assert|check|verify|resolve|guard|with)\w{0,40}(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)/i
 
-// Signals that a webhook verifies its payload signature.
-const SIGVERIFY = /signature|verif(?:y|ied|ication)|hmac|constructEvent|svix|createHmac|timingSafeEqual|paddle-signature|stripe-signature/i
+// Signals that a webhook actually VERIFIES its payload signature. This must be a
+// real verification operation — merely mentioning "signature" (e.g. reading the
+// `paddle-signature` header and ignoring it) is exactly the unverified webhook
+// this rule exists to catch, so the bare words `signature`/`verified`/`hmac` are
+// deliberately NOT accepted.
+const SIGVERIFY = /constructEvent\s*\(|createHmac\s*\(|createVerify\s*\(|timingSafeEqual\s*\(|crypto\.subtle\.verify\s*\(|\bsvix\b|new\s+Webhook\s*\(|\.verify\s*\(|verify(?:Signature|Webhook|Event|Payload|Header)\s*\(|(?:validate|isValid|check)Signature\s*\(|\.unmarshal\s*\(/i
+
+// A route is a webhook by its PATH. Beyond the literal word, a provider-qualified
+// callback/notify/inbound endpoint is one too (/api/stripe/callback,
+// /api/paddle/notify). A BARE /auth/callback is NOT — that is the OAuth return
+// leg, and calling it an unverified webhook would be a false alarm.
+const WEBHOOK_PATH =
+  /webhook|\/hooks?\/|(?:stripe|paddle|svix|clerk|lemonsqueezy|shopify|github|gitlab|twilio|sendgrid|resend|mailgun|postmark|slack|discord)[-_/]?(?:callback|notify|notification|events?|inbound)/i
+function isWebhookPath(file) {
+  return WEBHOOK_PATH.test(norm(file))
+}
 
 function norm(p) {
   return p.replace(/\\/g, '/')
@@ -107,7 +129,7 @@ function canonicalSuffix(s) {
 // "//cdn" is not a comment, and must not swallow a secret on the same line) and
 // preserving newlines so line numbers stay accurate. A tiny scanner that tracks
 // ' " ` strings with escapes; regex-literal edge cases are out of scope.
-export function stripJsComments(src) {
+export function stripJsComments(src, { blankStrings = false } = {}) {
   let out = ''
   let i = 0
   const n = src.length
@@ -116,9 +138,14 @@ export function stripJsComments(src) {
     const c = src[i]
     const c2 = src[i + 1]
     if (q) {
-      if (c === '\\') { out += c + (c2 ?? ''); i += 2; continue } // keep escapes
+      // `blankStrings` blanks the CONTENT of string literals (same length, so all
+      // offsets/line numbers stay valid) while keeping the quotes. A signal that
+      // only appears inside a string is not real code: `console.log("user.auth")`
+      // must not read as an auth check, and reading a header named
+      // 'paddle-signature' must not read as verifying it.
+      if (c === '\\') { out += blankStrings ? '  ' : c + (c2 ?? ''); i += 2; continue } // keep escapes
       if (c === q) { q = null; out += c; i++; continue }
-      out += c
+      out += blankStrings ? (c === '\n' ? '\n' : ' ') : c
       i++
       continue
     }
@@ -198,12 +225,22 @@ export function scanSecrets(rawText, file) {
     const name = m[0]
     const suffix = canonicalSuffix(name.slice('NEXT_PUBLIC_'.length))
     if (seen.has(name)) continue
-    // A hard secret is always flagged; a softer signal (API key / token / LLM key)
-    // is flagged unless the name matches a known-public pattern (anon, publishable…).
-    const isSecret = HARD_SECRET.test(suffix) || (SECRETY.test(suffix) && !PUBLIC_OK.test(suffix))
-    if (!isSecret) continue
+    // Severity is split so the build-breaking verdict stays unambiguous:
+    //  - HARD secret (service_role, *_SECRET, PRIVATE_KEY, ADMIN_KEY…) → fail.
+    //    There is no world where these belong in the browser bundle.
+    //  - SOFT signal (a generic *_API_KEY / *_TOKEN that is not a known-public
+    //    vendor key) → warn. Plenty of vendors ship a browser key with exactly
+    //    that name (Mixpanel, Contentful, Amplitude…), so failing the build here
+    //    is the false alarm that gets the gate uninstalled on day one.
+    const hard = HARD_SECRET.test(suffix)
+    const soft = SECRETY.test(suffix) && !PUBLIC_OK.test(suffix)
+    if (!hard && !soft) continue
     seen.add(name)
-    out.push({ rule: 'public_secret', severity: 'fail', file, line: lineOf(text, m.index), object: name, detail: `${name} is inlined into the client bundle by Next.js — a "NEXT_PUBLIC_" secret is readable by anyone. Rename it (drop NEXT_PUBLIC_) and read it server-side only.` })
+    out.push(
+      hard
+        ? { rule: 'public_secret', severity: 'fail', file, line: lineOf(text, m.index), object: name, detail: `${name} is inlined into the client bundle by Next.js — a "NEXT_PUBLIC_" secret is readable by anyone. Rename it (drop NEXT_PUBLIC_) and read it server-side only.` }
+        : { rule: 'public_secret', severity: 'warn', file, line: lineOf(text, m.index), object: name, detail: `${name} is inlined into the client bundle by Next.js. If this holds a server secret, rename it (drop NEXT_PUBLIC_) and read it server-side only. If it is a vendor's public browser key, allow-list it with --allow ${name}.` }
+    )
   }
   return out
 }
@@ -216,6 +253,9 @@ export function scanSecrets(rawText, file) {
  */
 export function scanRoute(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
+  // Auth/verification signals are judged on CODE only — a match inside a string
+  // literal is not a check (see stripJsComments's blankStrings).
+  const code = stripJsComments(rawText, { blankStrings: true })
   const out = []
   const url = routeUrl(file)
   const methods = []
@@ -225,17 +265,17 @@ export function scanRoute(rawText, file, { authFns = [] } = {}) {
 
   // A route is a webhook only by its PATH — never by merely mentioning the word
   // (a checkout route that references its webhook URL is not itself a webhook).
-  const isWebhook = /webhook/i.test(norm(file))
+  const isWebhook = isWebhookPath(file)
 
   if (isWebhook) {
-    if (!SIGVERIFY.test(text)) {
+    if (!SIGVERIFY.test(code)) {
       out.push({ rule: 'unverified_webhook', severity: 'warn', file, line: methods[0]?.line || 1, object: url, detail: `webhook route with no signature verification — anyone who finds the URL can forge calls. Verify the provider signature before trusting the body.` })
     }
     return out
   }
 
   const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
-  if (methods.length && !authRe.test(text)) {
+  if (methods.length && !authRe.test(code)) {
     const names = [...new Set(methods.map((x) => x.method))].join('/')
     out.push({ rule: 'unauth_mutation', severity: 'warn', file, line: methods[0].line, object: `${names} ${url}`, detail: `mutating handler with no auth check — confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
   }
@@ -249,12 +289,13 @@ const PAGES_MUTATION = /(?:req\.method\s*===?\s*|case\s+)['"`](post|put|patch|de
 
 export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
+  const code = stripJsComments(rawText, { blankStrings: true })
   const out = []
   const url = pagesRouteUrl(file)
-  const isWebhook = /webhook/i.test(norm(file))
+  const isWebhook = isWebhookPath(file)
 
   if (isWebhook) {
-    if (!SIGVERIFY.test(text)) {
+    if (!SIGVERIFY.test(code)) {
       out.push({ rule: 'unverified_webhook', severity: 'warn', file, line: 1, object: url, detail: `webhook route with no signature verification — anyone who finds the URL can forge calls. Verify the provider signature before trusting the body.` })
     }
     return out
@@ -264,7 +305,7 @@ export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
   if (!mut) return out // GET-only or no explicit mutating method → not flagged
 
   const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
-  if (!authRe.test(text)) {
+  if (!authRe.test(code)) {
     out.push({ rule: 'unauth_mutation', severity: 'warn', file, line: lineOf(text, mut.index), object: `${url} (pages)`, detail: `mutating handler with no auth check — confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
   }
   return out
@@ -314,6 +355,7 @@ const EXPORT_FN = /export\s+(?:async\s+)?function\s+\w+|export\s+(?:const|let|va
 
 export function scanServerAction(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
+  const code = stripJsComments(rawText, { blankStrings: true })
   if (!USE_SERVER.test(text)) return [] // not a Server Action file
   const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
   // Slice the file into exported-function segments so an auth call in ONE action
