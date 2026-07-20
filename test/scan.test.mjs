@@ -702,3 +702,21 @@ test('connection-string coverage reaches the Supabase/Prisma/Vercel stack', () =
     'NEXT_PUBLIC_STRIPE_RESTRICTED_KEY', 'NEXT_PUBLIC_GCP_SA_KEY',
   ]) assert.equal(sev(v), 'fail', `${v} is a real secret`)
 })
+
+// VERIFIER round 6 nits — a REST endpoint URL is not a connection string (its
+// credential is a separate token), so failing it is a false alarm.
+test('a REST endpoint URL is not a connection string', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  // The URL is public; the TOKEN beside it is the secret and is surfaced on its own.
+  for (const v of ['NEXT_PUBLIC_KV_REST_API_URL', 'NEXT_PUBLIC_REDIS_REST_URL', 'NEXT_PUBLIC_UPSTASH_REDIS_REST_URL']) {
+    assert.equal(sev(v), 'clean', `${v} is a REST endpoint, not a DSN`)
+  }
+  assert.equal(sev('NEXT_PUBLIC_KV_REST_API_TOKEN'), 'warn', 'the token is the real secret and is surfaced')
+  // …and a genuine connection string (no REST) still fails.
+  for (const v of ['NEXT_PUBLIC_KV_URL', 'NEXT_PUBLIC_REDIS_URL', 'NEXT_PUBLIC_DIRECT_URL']) {
+    assert.equal(sev(v), 'fail', `${v} is a connection string`)
+  }
+})

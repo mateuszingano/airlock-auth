@@ -469,7 +469,7 @@ const HARD_SECRET_MATCH = {
 // and a public API base URL never match.
 // A CURATED, non-exhaustive set — the mainstream databases, brokers and the
 // connection-string aliases common in a Next.js/Supabase stack. It cannot be
-// exhaustive (there is always the next engine: yugabyte, db2, riak…), and the
+// exhaustive (there is always the next engine: db2, hbase, firebird…), and the
 // README says so and points at `--fail-on warn` / `--allow` for the tail. The
 // aliases DB / DIRECT / KV are what catch the product's own audience: Supabase's
 // direct string is `SUPABASE_DB_URL`, Prisma's is `DIRECT_URL`, Vercel KV is
@@ -493,6 +493,10 @@ const CONN_DESCRIPTOR = new Set([
   'DOCS', 'DOC', 'STATUS', 'DASHBOARD', 'CONSOLE', 'ADMIN', 'UI', 'HEALTH', 'METRICS',
   'LOGO', 'HELP', 'PAGE', 'LINK', 'IMAGE', 'ICON', 'INFO', 'HOME', 'WEBSITE', 'SITE',
   'PORTAL', 'PANEL', 'STUDIO', 'VIEWER', 'BADGE',
+  // A REST endpoint URL is not a DSN: the credential is a separate token
+  // (`KV_REST_API_URL` is public, `KV_REST_API_TOKEN` is the secret — caught on
+  // its own). Failing the URL would be the false alarm this tool refuses.
+  'REST',
 ])
 function isConnectionString(suffix) {
   const segs = suffixSegments(suffix)
