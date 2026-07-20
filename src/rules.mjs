@@ -452,7 +452,7 @@ const SECRETY_MATCH = {
 // might be. AWS's genuine secret (`AWS_SECRET_ACCESS_KEY`) is still caught — by
 // the bare word SECRET, not by "access key".
 const HARD_SECRET_MATCH = {
-  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN'), phrase('CONNECTION STRING'), phrase('STRIPE SK'), phrase('GITHUB PAT'), ...VENDOR_KEYS],
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN'), phrase('CONNECTION STRING'), phrase('STRIPE SK'), phrase('STRIPE RK'), phrase('STRIPE RESTRICTED KEY'), phrase('GITHUB PAT'), phrase('GCP SA KEY'), phrase('SERVICE ACCOUNT KEY'), phrase('PG PASSWORD'), ...VENDOR_KEYS],
   words: ['PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'SECRET', 'SIGNING', 'ENCRYPTION', 'CREDENTIAL', 'CREDENTIALS'],
 }
 
@@ -467,11 +467,20 @@ const HARD_SECRET_MATCH = {
 // may be Firebase's public one — it stays a soft `warn`); the engine has to be
 // named. `SUPABASE`/`API`/`SITE` are not engines, so `NEXT_PUBLIC_SUPABASE_URL`
 // and a public API base URL never match.
+// A CURATED, non-exhaustive set — the mainstream databases, brokers and the
+// connection-string aliases common in a Next.js/Supabase stack. It cannot be
+// exhaustive (there is always the next engine: yugabyte, db2, riak…), and the
+// README says so and points at `--fail-on warn` / `--allow` for the tail. The
+// aliases DB / DIRECT / KV are what catch the product's own audience: Supabase's
+// direct string is `SUPABASE_DB_URL`, Prisma's is `DIRECT_URL`, Vercel KV is
+// `KV_URL` — all connection strings with an embedded credential, all were silent.
 const DB_ENGINES = new Set([
   'MYSQL', 'MARIADB', 'MSSQL', 'SQLSERVER', 'POSTGRES', 'POSTGRESQL', 'PG', 'MONGO',
   'MONGODB', 'REDIS', 'CLICKHOUSE', 'COCKROACH', 'COCKROACHDB', 'PLANETSCALE',
   'CASSANDRA', 'SCYLLA', 'SCYLLADB', 'RABBITMQ', 'AMQP', 'AMQPS', 'KAFKA', 'NATS',
-  'ELASTICSEARCH', 'OPENSEARCH', 'NEON', 'SMTP',
+  'ELASTICSEARCH', 'OPENSEARCH', 'NEON', 'SMTP', 'ORACLE', 'TURSO', 'LIBSQL',
+  'SNOWFLAKE', 'COUCHDB', 'ARANGODB', 'VITESS', 'YUGABYTE', 'PULSAR', 'MQTT',
+  'INFLUXDB', 'INFLUX', 'MEMCACHED', 'RIAK', 'AEROSPIKE', 'DB', 'DIRECT', 'KV',
 ])
 const CONN_SUFFIX = new Set(['URL', 'URI', 'CONNECTION', 'CONN', 'DSN'])
 // Words that turn `<engine>_…_URL` into a PUBLIC link ABOUT the engine, not its

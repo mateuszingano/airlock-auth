@@ -674,3 +674,31 @@ test('an engine-named public link is not a connection string', () => {
     'NEXT_PUBLIC_POSTGRES_DATABASE_URL', 'NEXT_PUBLIC_REDIS_URL',
   ]) assert.equal(sev(v), 'fail', `${v} is a connection string`)
 })
+
+// VERIFIER round 5 (b-i) — the connection-string dictionary is curated, not
+// exhaustive, but it must at least cover the product's OWN audience: Supabase's
+// direct string, Prisma's DIRECT_URL, Vercel KV — all were silent.
+test('connection-string coverage reaches the Supabase/Prisma/Vercel stack', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  for (const v of [
+    'NEXT_PUBLIC_SUPABASE_DB_URL', 'NEXT_PUBLIC_DIRECT_URL', 'NEXT_PUBLIC_KV_URL',
+    'NEXT_PUBLIC_DB_URL', 'NEXT_PUBLIC_ORACLE_URL', 'NEXT_PUBLIC_TURSO_URL',
+    'NEXT_PUBLIC_LIBSQL_URL', 'NEXT_PUBLIC_SNOWFLAKE_URL',
+  ]) assert.equal(sev(v), 'fail', `${v} embeds a credential — must fail`)
+
+  // The alias tokens must not create false positives on their look-alikes.
+  // REDIRECT_URL is not DIRECT_URL; a plain SUPABASE_URL is the public endpoint.
+  for (const v of [
+    'NEXT_PUBLIC_REDIRECT_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_API_URL',
+    'NEXT_PUBLIC_SITE_URL', 'NEXT_PUBLIC_CDN_URL',
+  ]) assert.equal(sev(v), 'clean', `${v} is a public URL`)
+
+  // The smaller never-public names the audit named.
+  for (const v of [
+    'NEXT_PUBLIC_PGPASSWORD', 'NEXT_PUBLIC_STRIPE_RK',
+    'NEXT_PUBLIC_STRIPE_RESTRICTED_KEY', 'NEXT_PUBLIC_GCP_SA_KEY',
+  ]) assert.equal(sev(v), 'fail', `${v} is a real secret`)
+})
