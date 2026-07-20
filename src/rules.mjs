@@ -474,8 +474,20 @@ const DB_ENGINES = new Set([
   'ELASTICSEARCH', 'OPENSEARCH', 'NEON', 'SMTP',
 ])
 const CONN_SUFFIX = new Set(['URL', 'URI', 'CONNECTION', 'CONN', 'DSN'])
+// Words that turn `<engine>_…_URL` into a PUBLIC link ABOUT the engine, not its
+// connection string: a docs page, a status page, a dashboard, a logo image. A
+// connection string names the engine and its endpoint and nothing else, so any
+// descriptor segment means "this points at the engine" — the same pointer logic
+// the phrase matcher uses, which this separate axis has to honor too or it fails
+// the build on `POSTGRES_DOCS_URL` and `POSTGRES_LOGO_URL`.
+const CONN_DESCRIPTOR = new Set([
+  'DOCS', 'DOC', 'STATUS', 'DASHBOARD', 'CONSOLE', 'ADMIN', 'UI', 'HEALTH', 'METRICS',
+  'LOGO', 'HELP', 'PAGE', 'LINK', 'IMAGE', 'ICON', 'INFO', 'HOME', 'WEBSITE', 'SITE',
+  'PORTAL', 'PANEL', 'STUDIO', 'VIEWER', 'BADGE',
+])
 function isConnectionString(suffix) {
   const segs = suffixSegments(suffix)
+  if (segs.some((s) => CONN_DESCRIPTOR.has(s))) return false // a link ABOUT the engine, not its DSN
   return segs.some((s) => DB_ENGINES.has(s)) && segs.some((s) => CONN_SUFFIX.has(s))
 }
 

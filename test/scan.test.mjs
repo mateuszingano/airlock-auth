@@ -650,3 +650,27 @@ test('an LLM-provider key fails in its canonical PROVIDER_API_KEY spelling too',
   assert.equal(sev('NEXT_PUBLIC_ALCHEMY_API_KEY'), 'warn')
   assert.equal(sev('NEXT_PUBLIC_WIDGETCO_API_KEY'), 'warn')
 })
+
+// VERIFIER round 5 — the connection-string axis ignored the pointer logic the
+// rest of the scanner honors, so a PUBLIC link that merely NAMES an engine broke
+// the build: a docs page, a status page, a logo image.
+test('an engine-named public link is not a connection string', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  // Descriptor between the engine and the URL → a link ABOUT the engine → clean.
+  for (const v of [
+    'NEXT_PUBLIC_POSTGRES_DOCS_URL', 'NEXT_PUBLIC_REDIS_STATUS_URL',
+    'NEXT_PUBLIC_MONGO_DASHBOARD_URL', 'NEXT_PUBLIC_KAFKA_CONSOLE_URL',
+    'NEXT_PUBLIC_MYSQL_ADMIN_URL', 'NEXT_PUBLIC_POSTGRES_LOGO_URL',
+    'NEXT_PUBLIC_ELASTICSEARCH_HEALTH_URL',
+  ]) assert.equal(sev(v), 'clean', `${v} is a public link about the engine, not its DSN`)
+
+  // …without letting a real connection string slip through on a benign middle
+  // word: `POSTGRES_DATABASE_URL` is still the DSN.
+  for (const v of [
+    'NEXT_PUBLIC_POSTGRES_URL', 'NEXT_PUBLIC_MYSQL_URL',
+    'NEXT_PUBLIC_POSTGRES_DATABASE_URL', 'NEXT_PUBLIC_REDIS_URL',
+  ]) assert.equal(sev(v), 'fail', `${v} is a connection string`)
+})
