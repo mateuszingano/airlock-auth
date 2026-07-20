@@ -608,3 +608,45 @@ test('#cli repeated --allow accumulates instead of discarding the first', async 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// VERIFIER round 4 — two silent false-negatives, same root: an incomplete
+// secret dictionary, not the tail mechanism (which held).
+test('a named database/broker connection string always fails, whatever the engine', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  // `POSTGRES_URL` failed while these siblings — same class, credential in the
+  // value, never public — read clean. All must fail now.
+  for (const v of [
+    'NEXT_PUBLIC_MYSQL_URL', 'NEXT_PUBLIC_MARIADB_URL', 'NEXT_PUBLIC_MSSQL_CONNECTION',
+    'NEXT_PUBLIC_CLICKHOUSE_URL', 'NEXT_PUBLIC_COCKROACH_URL', 'NEXT_PUBLIC_PLANETSCALE_URL',
+    'NEXT_PUBLIC_RABBITMQ_URL', 'NEXT_PUBLIC_AMQP_URL', 'NEXT_PUBLIC_KAFKA_URL',
+    'NEXT_PUBLIC_POSTGRES_URL', 'NEXT_PUBLIC_MONGODB_URI',
+    'NEXT_PUBLIC_REDIS_URL',
+  ]) assert.equal(sev(v), 'fail', `${v} is a connection string with an embedded credential`)
+
+  // A public URL is NOT a connection string: no engine token. These must stay
+  // clean — breaking them is the false alarm a wide `*_URL` rule would cause.
+  for (const v of [
+    'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_SITE_URL',
+    'NEXT_PUBLIC_APP_URL', 'NEXT_PUBLIC_BASE_URL', 'NEXT_PUBLIC_CDN_URL',
+    'NEXT_PUBLIC_SENTRY_DSN', 'NEXT_PUBLIC_FIREBASE_DATABASE_URL',
+  ]) assert.equal(sev(v), 'clean', `${v} is a public URL, not a connection string`)
+})
+
+test('an LLM-provider key fails in its canonical PROVIDER_API_KEY spelling too', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  // The name providers actually use has API in the middle. Both spellings must
+  // fail — the README lists "LLM-provider key" under fail.
+  for (const p of ['OPENAI', 'ANTHROPIC', 'GROQ', 'MISTRAL', 'COHERE', 'GEMINI', 'DEEPSEEK', 'XAI']) {
+    assert.equal(sev(`NEXT_PUBLIC_${p}_API_KEY`), 'fail', `NEXT_PUBLIC_${p}_API_KEY must fail`)
+    assert.equal(sev(`NEXT_PUBLIC_${p}_KEY`), 'fail', `NEXT_PUBLIC_${p}_KEY must fail`)
+  }
+  // …without dragging a generic vendor API key up with it — those still warn.
+  assert.equal(sev('NEXT_PUBLIC_ALCHEMY_API_KEY'), 'warn')
+  assert.equal(sev('NEXT_PUBLIC_WIDGETCO_API_KEY'), 'warn')
+})

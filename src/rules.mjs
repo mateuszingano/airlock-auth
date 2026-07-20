@@ -410,7 +410,12 @@ function matchesSecret(suffix, { phrases, words }, { neverPublic = false } = {})
 /** `'SERVICE ROLE'` → `{ words: ['SERVICE','ROLE'], glued: 'SERVICEROLE' }` */
 const phrase = (s) => ({ words: s.split(' '), glued: s.replace(/ /g, '') })
 
-const VENDOR_KEYS = ['ANTHROPIC', 'OPENAI', 'OPENROUTER', 'GROQ', 'MISTRAL', 'COHERE', 'REPLICATE', 'HUGGINGFACE', 'PERPLEXITY', 'DEEPSEEK', 'TOGETHER', 'GEMINI', 'XAI'].map((v) => phrase(`${v} KEY`))
+// Both spellings, because the canonical one has `API` in the middle: OpenAI and
+// Anthropic ship `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, not `OPENAI_KEY`. Only
+// listing `<PROVIDER> KEY` matched the spelling nobody writes and let the real
+// one (`OPENAI_API_KEY`) fall through to the generic soft `API KEY` → warn,
+// under the severity the README promises for an LLM key.
+const VENDOR_KEYS = ['ANTHROPIC', 'OPENAI', 'OPENROUTER', 'GROQ', 'MISTRAL', 'COHERE', 'REPLICATE', 'HUGGINGFACE', 'PERPLEXITY', 'DEEPSEEK', 'TOGETHER', 'GEMINI', 'XAI'].flatMap((v) => [phrase(`${v} KEY`), phrase(`${v} API KEY`)])
 
 // Anything that reads as a server secret.
 const SECRETY_MATCH = {
@@ -447,8 +452,31 @@ const SECRETY_MATCH = {
 // might be. AWS's genuine secret (`AWS_SECRET_ACCESS_KEY`) is still caught — by
 // the bare word SECRET, not by "access key".
 const HARD_SECRET_MATCH = {
-  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN'), phrase('CONNECTION STRING'), phrase('MONGODB URI'), phrase('MONGO URL'), phrase('REDIS URL'), phrase('POSTGRES URL'), phrase('STRIPE SK'), phrase('GITHUB PAT'), ...VENDOR_KEYS],
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN'), phrase('CONNECTION STRING'), phrase('STRIPE SK'), phrase('GITHUB PAT'), ...VENDOR_KEYS],
   words: ['PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'SECRET', 'SIGNING', 'ENCRYPTION', 'CREDENTIAL', 'CREDENTIALS'],
+}
+
+// A datastore/broker CONNECTION STRING embeds credentials in its value
+// (`mysql://user:pass@host/db`) and is never public, whatever the engine. The
+// phrase list used to carry only `POSTGRES URL`/`MONGODB URI`/`REDIS URL`, so
+// `NEXT_PUBLIC_POSTGRES_URL` failed while its `NEXT_PUBLIC_MYSQL_URL` sibling —
+// same class, same leak — read clean. Recognized instead by an engine token next
+// to a connection suffix. Still a finite set, but of the mainstream databases
+// and brokers, and the README describes it as exactly that rather than promising
+// "any connection string". A generic `DATABASE_URL` is deliberately NOT here (it
+// may be Firebase's public one — it stays a soft `warn`); the engine has to be
+// named. `SUPABASE`/`API`/`SITE` are not engines, so `NEXT_PUBLIC_SUPABASE_URL`
+// and a public API base URL never match.
+const DB_ENGINES = new Set([
+  'MYSQL', 'MARIADB', 'MSSQL', 'SQLSERVER', 'POSTGRES', 'POSTGRESQL', 'PG', 'MONGO',
+  'MONGODB', 'REDIS', 'CLICKHOUSE', 'COCKROACH', 'COCKROACHDB', 'PLANETSCALE',
+  'CASSANDRA', 'SCYLLA', 'SCYLLADB', 'RABBITMQ', 'AMQP', 'AMQPS', 'KAFKA', 'NATS',
+  'ELASTICSEARCH', 'OPENSEARCH', 'NEON', 'SMTP',
+])
+const CONN_SUFFIX = new Set(['URL', 'URI', 'CONNECTION', 'CONN', 'DSN'])
+function isConnectionString(suffix) {
+  const segs = suffixSegments(suffix)
+  return segs.some((s) => DB_ENGINES.has(s)) && segs.some((s) => CONN_SUFFIX.has(s))
 }
 
 // Strip JS/TS comments so a comment ("// TODO: verify signature") can't fake a
@@ -744,7 +772,10 @@ export function scanSecrets(rawText, file) {
     // old code answered silence here, which is how a service_role key walked past.
     const hardV = matchesSecret(suffix, HARD_SECRET_MATCH, { neverPublic: true })
     const softV = PUBLIC_OK.test(canonicalSuffix(suffix)) ? 'no' : matchesSecret(suffix, SECRETY_MATCH)
-    const breaksBuild = hardV === 'yes'
+    // A named database/broker connection string is never public — fail, same as
+    // the HARD set. It is a separate axis from the phrase matcher (an engine
+    // token beside a URL/URI/DSN), so it is checked on its own.
+    const breaksBuild = hardV === 'yes' || isConnectionString(suffix)
     const warns = softV === 'yes' || softV === 'ambiguous' || hardV === 'ambiguous'
     if (!breaksBuild && !warns) continue
     seen.add(name)
