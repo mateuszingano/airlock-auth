@@ -421,3 +421,52 @@ test('#pages a write with no method-check at all is a mutation', () => {
     'clean', 'it does consult req.method — unparsed shape stays silent, by design'
   )
 })
+
+// VERIFIER PASS (20/07). The first fix narrowed the tail amnesty from "any
+// position" to "position 1" and stopped there, which left the SAME exploit open
+// under a different suffix: `SERVICE_ROLE_KEY_ROTATION` stayed clean because
+// ROTATION is a pointer word, not a config word. And the credential names most
+// common in a Next.js app (JWT_SECRET, WEBHOOK_SECRET, ENCRYPTION_KEY…) were
+// never phrases at all, so every one of them was softened by any trailing word.
+test('#tail credential PHRASES survive every trailing word', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`export const x = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  const stems = [
+    'SUPABASE_SERVICE_ROLE_KEY', 'ENCRYPTION_KEY', 'SIGNING_KEY', 'WEBHOOK_SECRET',
+    'STRIPE_WEBHOOK_SIGNING_SECRET', 'SESSION_SECRET', 'JWT_SECRET', 'CLIENT_SECRET',
+    'NEXTAUTH_SECRET', 'SECRET_KEY', 'PRIVATE_KEY', 'MASTER_KEY', 'ADMIN_KEY',
+  ]
+  // A config word never softens a phrase: still a build break.
+  for (const s of stems) {
+    for (const suf of ['MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET']) {
+      assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'fail', `NEXT_PUBLIC_${s}_${suf} is a shipped credential`)
+    }
+    // A pointer word downgrades to a warning — never to silence.
+    for (const suf of ['ROTATION', 'REFRESH', 'REQUIRED', 'LIMIT', 'PER']) {
+      assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'warn', `NEXT_PUBLIC_${s}_${suf} must not be silenced`)
+    }
+  }
+
+  // Bare words that do NOT form config names keep their finding.
+  for (const v of ['NEXT_PUBLIC_DB_CREDENTIALS_FLAG', 'NEXT_PUBLIC_SMTP_PASS_MODE', 'NEXT_PUBLIC_GITHUB_PAT_TYPE']) {
+    assert.equal(sev(v), 'warn', `${v} is not a config knob`)
+  }
+
+  // …and the false alarms stay prevented. These are the shapes that made an
+  // earlier release unusable; every one must still read clean.
+  for (const v of [
+    'NEXT_PUBLIC_PASSWORD_MIN_LENGTH', 'NEXT_PUBLIC_PRIVATE_BETA',
+    'NEXT_PUBLIC_TOKEN_REFRESH_INTERVAL', 'NEXT_PUBLIC_PASSWORD_RESET_URL',
+    'NEXT_PUBLIC_API_KEY_HEADER', 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'NEXT_PUBLIC_ADMIN_KEYCLOAK_URL', 'NEXT_PUBLIC_SERVER_TOKENIZER_URL',
+    'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'NEXT_PUBLIC_FIREBASE_DATABASE_URL',
+  ]) assert.equal(sev(v), 'clean', `${v} is public by design`)
+
+  // KNOWN FLOOR, asserted so it stays a decision and not drift. Documented in
+  // the README's coverage gaps.
+  assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD_FLAG'), 'clean')
+  assert.equal(sev('NEXT_PUBLIC_SMTP_PASS_ROTATION'), 'clean')
+  assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD'), 'fail', 'the same name without the tail still fails')
+})

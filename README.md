@@ -62,13 +62,24 @@ Monitor):
   a secret hardcoded in client code or shipped some other way.
 - **Read handlers** (`GET`) — a `GET` that leaks data without auth is not flagged;
   only mutations are.
-- **A credential named after a config word** — the suffix is read as English, and
-  a bare secret word followed by a config word is treated as config, because that
-  is what it almost always is (`NEXT_PUBLIC_PRIVATE_BETA` is a feature flag,
-  `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` is a form rule). So
+- **A credential whose name ends in `PRIVATE`/`PASSWORD`/`TOKEN` + a config word.**
+  The suffix is read as English. Those three words form genuine config names
+  (`NEXT_PUBLIC_PRIVATE_BETA` is a feature flag, `NEXT_PUBLIC_PASSWORD_MIN_LENGTH`
+  is a form rule, `NEXT_PUBLIC_TOKEN_REFRESH_INTERVAL` is a duration), so a
+  config word right after them clears the finding. The cost is real and precise:
   `NEXT_PUBLIC_DB_PASSWORD_FLAG` reads clean while `NEXT_PUBLIC_DB_PASSWORD`
-  fails. A credential *phrase* (`SERVICE_ROLE`, `SECRET_KEY`, `PRIVATE_KEY`) is
-  never waved through this way — `NEXT_PUBLIC_SERVICE_ROLE_KEY_MAX` fails.
+  fails. **Only those words soften** — `CREDENTIALS`, `PASS` and `PAT` do not, so
+  `NEXT_PUBLIC_DB_CREDENTIALS_FLAG` warns.
+  A credential **phrase** (`SERVICE_ROLE`, `SECRET_KEY`, `PRIVATE_KEY`,
+  `WEBHOOK_SECRET`, `JWT_SECRET`, `SIGNING_SECRET`, `ENCRYPTION_KEY`,
+  `SESSION_SECRET`, `CLIENT_SECRET`, `ADMIN_KEY`, `MASTER_KEY`…) is **never**
+  softened by a config word: `NEXT_PUBLIC_SERVICE_ROLE_KEY_MAX` and
+  `NEXT_PUBLIC_STRIPE_WEBHOOK_SIGNING_SECRET_MODE` both fail the build.
+  A **pointer** word (`URL`, `DOCS`, `ROTATION`, `LIMIT`, `PER`, `REQUIRED`…)
+  right after a credential phrase downgrades it to a **warning**, not silence —
+  `NEXT_PUBLIC_SERVICE_ROLE_KEY_ROTATION` warns. After a bare word it still
+  clears: `NEXT_PUBLIC_SMTP_PASS_ROTATION` and `NEXT_PUBLIC_DB_CREDENTIALS_LIMIT`
+  read clean. That residue is the known floor of reading names as English.
 - **Pages Router method dispatch we cannot parse** — a `pages/api` handler that
   writes and never mentions `req.method` is flagged (it answers every verb). One
   that *does* consult `req.method` in a shape the matcher doesn't recognize

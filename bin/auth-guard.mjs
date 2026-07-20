@@ -87,8 +87,11 @@ function parseArgs(argv) {
     // remove; `--allow` was documented as comma-separated, never as single-use.
     else if (a === '--allow') opts.allow.push(...splitList(argv[++i]))
     else if (a.startsWith('--allow=')) opts.allow.push(...splitList(a.slice('--allow='.length)))
-    else if (a === '--auth-fn') opts.authFns = splitList(argv[++i])
-    else if (a.startsWith('--auth-fn=')) opts.authFns = splitList(a.slice('--auth-fn='.length))
+    // Accumulates for the same reason as --allow: a project with two auth
+    // helpers would have had the first one dropped, and every route it guards
+    // flagged as unauthed — the false-alarm wave this tool refuses to cause.
+    else if (a === '--auth-fn') opts.authFns.push(...splitList(argv[++i]))
+    else if (a.startsWith('--auth-fn=')) opts.authFns.push(...splitList(a.slice('--auth-fn='.length)))
     else if (a.startsWith('-')) throw new UsageError(`Unknown option: ${a}`)
     else positional.push(a)
   }

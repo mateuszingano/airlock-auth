@@ -537,3 +537,43 @@ test('#allow an entry that matched nothing is reported, not swallowed', async ()
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// The `--allow` accumulation fix lived in bin/parseArgs with no test touching
+// the binary at all, so any refactor of the parser reopened it in silence —
+// and it was a silent-loss bug to begin with. Drive the real CLI.
+test('#cli repeated --allow accumulates instead of discarding the first', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const dir = await mkdtemp(join(tmpdir(), 'ag-cli-'))
+  try {
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(join(dir, 'app/api/charge'), { recursive: true })
+    await writeFile(join(dir, 'lib.ts'), 'export const K = process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY\n')
+    await writeFile(join(dir, 'app/api/charge/route.ts'), 'export async function POST(req){ await db.from("t").insert({}) }\n')
+
+    const bin = fileURLToPath(new URL('../bin/auth-guard.mjs', import.meta.url))
+    const run = (...args) => {
+      const r = spawnSync(process.execPath, [bin, dir, ...args, '--json'], { encoding: 'utf8' })
+      return JSON.parse(r.stdout)
+    }
+
+    // Two separate flags: BOTH must be honoured. Assigning meant the first was
+    // dropped, so the secret it covered came back and failed the build while
+    // the user believed it was allow-listed.
+    const both = run('--allow', 'NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY', '--allow', '/api/charge')
+    assert.equal(both.allowed.length, 2, 'both --allow flags survive')
+    assert.equal(both.findings.length, 0, 'and both findings are actually silenced')
+    assert.deepEqual(both.staleAllows, [], 'neither entry is stale')
+
+    // The comma-separated form documented in --help still works, and mixes.
+    const mixed = run('--allow', 'NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY,/api/charge')
+    assert.equal(mixed.allowed.length, 2, 'comma-separated still works')
+
+    // --auth-fn had the identical assign-instead-of-push bug: a project with two
+    // auth helpers lost the first, and every route it guards was flagged.
+    await writeFile(join(dir, 'app/api/charge/route.ts'), 'export async function POST(req){ await meuPortao(req); await db.from("t").insert({}) }\n')
+    const two = run('--auth-fn', 'guardaZingui', '--auth-fn', 'meuPortao')
+    assert.ok(!two.findings.some((f) => f.rule === 'unauth_mutation'), 'the second --auth-fn must not erase the first')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

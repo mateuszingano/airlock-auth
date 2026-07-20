@@ -246,7 +246,7 @@ function suffixSegments(s) {
  *    end-anchor existed in the first place. Segment matching gives that
  *    protection without caring what comes after.
  */
-function matchesSecret(suffix, { phrases, words }) {
+function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
   const segs = suffixSegments(suffix)
   const glued = canonicalSuffix(suffix)
 
@@ -323,18 +323,37 @@ function matchesSecret(suffix, { phrases, words }) {
   // when it is flatly a service_role key.
   const CREDENTIAL_NOUN = new Set(['KEY', 'KEYS', 'TOKEN', 'TOKENS', 'SECRET', 'SECRETS', 'CREDENTIAL', 'CREDENTIALS', 'PASSWORD', 'PASSWORDS', 'PAT'])
 
-  const isHarmlessTail = (from0, strength) => {
+  // The only bare secret words that form genuine config names in English (see
+  // the CONFIG_TAIL branch below). Every other bare word keeps its finding.
+  const SOFTENING_WORDS = new Set(['PRIVATE', 'PASSWORD', 'PASSWORDS', 'TOKEN', 'TOKENS'])
+
+  const isHarmlessTail = (from0, strength, matchedWord) => {
     let from = from0
     while (from < segs.length && CREDENTIAL_NOUN.has(segs[from])) from++
     const tail = segs.slice(from)
     if (tail.length === 0) return 'yes'
-    if (PUBLIC_TAIL.has(tail[0])) return 'no'
-    // A config word right after a bare secret WORD reads as config. After a
-    // credential PHRASE it does not: there is no public `NEXT_PUBLIC_` variable
-    // whose name contains "service role" or "secret key", whatever trails it.
-    // Not even a downgrade to `warn` — the headline promise is that the build
-    // FAILS on a shipped credential, and `SERVICE_ROLE_KEY_MAX` is one.
-    if (CONFIG_TAIL.has(tail[0])) return strength === 'word' ? 'no' : 'yes'
+    // A pointer word clears a bare secret WORD outright, but must not clear a
+    // credential PHRASE in a strict (hard-secret) match. Narrowing the amnesty
+    // from "any position" to "position 1" closed `SERVICE_ROLE_KEY_MAX` and left
+    // `SERVICE_ROLE_KEY_ROTATION` wide open — same exploit, different suffix.
+    // A service_role key is not a docs link because the word ROTATION follows it.
+    if (PUBLIC_TAIL.has(tail[0])) return strict && strength === 'phrase' ? 'ambiguous' : 'no'
+    // A config word right after a credential PHRASE changes nothing: there is no
+    // public `NEXT_PUBLIC_` variable whose name contains "service role" or
+    // "webhook secret", whatever trails it. Not even a downgrade to `warn` — the
+    // headline promise is that the build FAILS on a shipped credential.
+    //
+    // After a bare WORD it only clears the finding when that word is one that
+    // really does form config names in English. `PRIVATE`, `PASSWORD` and
+    // `TOKEN` do — `PRIVATE_BETA` is a feature flag, `PASSWORD_MIN_LENGTH` is a
+    // form rule, `TOKEN_REFRESH_INTERVAL` is a duration. `CREDENTIALS`, `PASS`
+    // and `PAT` do not: nobody names a config knob "credentials flag", so
+    // silencing `DB_CREDENTIALS_FLAG` bought a false negative and prevented no
+    // false alarm.
+    if (CONFIG_TAIL.has(tail[0])) {
+      if (strength === 'phrase') return 'yes'
+      return SOFTENING_WORDS.has(matchedWord) ? 'no' : 'ambiguous'
+    }
     // A pointer word further down the tail: cannot prove it either way.
     if (tail.slice(1).some((seg) => PUBLIC_TAIL.has(seg) || CONFIG_TAIL.has(seg))) return 'ambiguous'
     return 'yes'
@@ -368,7 +387,7 @@ function matchesSecret(suffix, { phrases, words }) {
     if (segs.length === 1 && glued.includes(p.glued)) raise('yes')
   }
   const at = segs.findIndex((seg) => words.some((w) => sameWord(seg, w)))
-  if (at !== -1) raise(isHarmlessTail(at + 1, 'word'))
+  if (at !== -1) raise(isHarmlessTail(at + 1, 'word', segs[at]))
   return verdict
 }
 
@@ -388,8 +407,15 @@ const SECRETY_MATCH = {
 // The strong set the public-vendor allow-list may never wave through.
 // ADMIN/SERVER/MASTER only ever appear as PHRASES with a KEY/TOKEN companion, so
 // a plain ADMIN_URL or ADMIN_EMAIL stays clean while ADMIN_KEY is caught.
+// The `<thing> SECRET` / `<thing> KEY` names below are PHRASES, not bare words,
+// and that distinction is load-bearing: only a phrase resists the tail amnesty.
+// Left as bare words, the most ordinary credential names in a Next.js app —
+// `JWT_SECRET`, `WEBHOOK_SECRET`, `SESSION_SECRET`, `CLIENT_SECRET`,
+// `ENCRYPTION_KEY`, `SIGNING_SECRET` — were silenced outright by any config or
+// pointer word after them, so `NEXT_PUBLIC_STRIPE_WEBHOOK_SIGNING_SECRET_MODE`
+// read clean while the README promised to catch exactly that.
 const HARD_SECRET_MATCH = {
-  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN')],
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN')],
   words: ['PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'SECRET', 'SIGNING', 'ENCRYPTION', 'CREDENTIAL', 'CREDENTIALS'],
 }
 
@@ -681,7 +707,7 @@ export function scanSecrets(rawText, file) {
     //    cannot prove it holds the credential, and we refuse to prove it does
     //    not: the old code answered silence here, which is how a service_role
     //    key walked past the gate.
-    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH)
+    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH, { strict: true })
     const softV = PUBLIC_OK.test(canonicalSuffix(suffix)) ? 'no' : matchesSecret(suffix, SECRETY_MATCH)
     const hard = hardV === 'yes'
     const soft = softV !== 'no' || hardV === 'ambiguous'
