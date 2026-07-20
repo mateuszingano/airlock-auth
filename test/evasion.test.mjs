@@ -453,15 +453,17 @@ test('#tail credential PHRASES survive every trailing word', () => {
       assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'fail', `NEXT_PUBLIC_${s}_${suf} is a shipped credential`)
     }
     // A TRUE pointer word (URL, DOCS, HEADER…) genuinely points outward, so it
-    // must never BREAK THE BUILD. It clears for a clean phrase (SERVICE_ROLE),
-    // and warns when the stem is also a bare secret word (ENCRYPTION, SIGNING) —
-    // either way, never a fail on a name that points at the credential.
+    // must never BREAK THE BUILD. But every stem here is a HARD credential with
+    // NO legitimately public form, so a pointer after it is ambiguous, not proof
+    // it points away: it WARNS, never clean and never fail.
     for (const suf of ['DOCS_URL', 'HEADER', 'ENDPOINT']) {
-      assert.notEqual(sev(`NEXT_PUBLIC_${s}_${suf}`), 'fail', `NEXT_PUBLIC_${s}_${suf} points at the credential, must not break the build`)
+      assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'warn', `NEXT_PUBLIC_${s}_${suf} points at a never-public credential — warn, not silence`)
     }
-    // The pure-phrase stems (no bare-word component) clear outright.
-    assert.equal(sev('NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_DOCS_URL'), 'clean')
   }
+  // The residue the verifier caught: a never-public phrase + pointer used to read
+  // clean. There is no safe NEXT_PUBLIC_SERVICE_ROLE_KEY_URL, so it warns now.
+  assert.equal(sev('NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_DOCS_URL'), 'warn')
+  assert.equal(sev('NEXT_PUBLIC_SERVICE_ROLE_KEY_ENDPOINT'), 'warn')
 
   // Bare words that do NOT form config names keep their finding as a warning.
   for (const v of ['NEXT_PUBLIC_DB_CREDENTIALS_FLAG', 'NEXT_PUBLIC_SMTP_PASS_MODE']) {

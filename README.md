@@ -15,7 +15,7 @@ npx airlock-auth ./apps/web
 
 | Rule | Level | Catches |
 |------|-------|---------|
-| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, master key, database URL, password, LLM-provider key). A **known-public vendor key** (Supabase anon, Stripe publishable, Paddle client token, Firebase, PostHog…) is exempt — never flagged. A name whose secret word is trailed by a config/pointer word we cannot resolve (`SERVICE_ROLE_KEY_ROTATION`, `CRON_SECRET_ENDPOINT`) is a `warn`, not a build break. |
+| `public_secret` | fail / warn | a server secret exposed via `NEXT_PUBLIC_*`. **Fails** the build when the name can NEVER be legitimately public: `service_role`, any `*_SECRET`, private/signing/encryption/master key, a connection string (`POSTGRES_URL`, `MONGODB_URI`, `REDIS_URL`, `CONNECTION_STRING`), an LLM-provider key, a Stripe `SK`, a GitHub `PAT`, a password. **Warns** when a vendor might ship the name public: a generic `*_API_KEY` / `*_TOKEN`, a bare `DATABASE_URL` (Firebase's is public), a bare `ACCESS_KEY` (Unsplash's is public). Use `--fail-on warn` to gate on those too. A **known-public vendor key** (Supabase anon, Stripe publishable, Paddle client token, Firebase, PostHog…) is exempt — never flagged. A credential trailed by a **config** word (`SERVICE_ROLE_KEY_ROTATION`, `_MAX`) keeps its severity; trailed by a **pointer** word we cannot resolve (`SERVICE_ROLE_KEY_URL`, `CRON_SECRET_ENDPOINT`) it drops to `warn`. |
 | `unauth_mutation` | warn | a mutating route with no auth check — App Router `route.ts` **and** Pages Router `pages/api` |
 | `unauth_server_action` | warn | a Server Action (`'use server'`) that writes to the DB with no auth check |
 | `unverified_webhook` | warn | a webhook route that never verifies a signature |
@@ -26,9 +26,13 @@ without gating on them they can only ever be *printed*. Use `--fail-on warn`
 (or its alias `--strict`) to make warnings break the build too, and the
 `fail-on` input to do the same in the Action.
 
-**No false alarms by design.** A `NEXT_PUBLIC_*` name that holds a server secret
-(API key, token, access key, service role, secret, password, LLM-provider key) is
-flagged; names that are public on purpose — `ANON_KEY`, `PUBLISHABLE`, `MAPBOX`,
+**No false build breaks by design.** The line between `fail` and `warn` is the
+NOUN, not a vendor list: a name that can never be public (`service_role`, any
+`*_SECRET`, a connection string, an LLM key) **fails**, while a name a vendor
+might legitimately ship public (a generic `*_API_KEY`, a bare `DATABASE_URL` or
+`ACCESS_KEY`) **warns** — so Alchemy, Infura, Weglot and the like never break a
+real project's CI on first run. Names that are public on purpose — `ANON_KEY`,
+`PUBLISHABLE`, `MAPBOX`,
 Google Maps / Firebase client config, web-push `VAPID`, `TURNSTILE`, analytics /
 site keys, and public client tokens/keys of common SDKs (Paddle `CLIENT_TOKEN`,
 Stream, Algolia, LiveKit, Liveblocks public key, Segment write key, Sentry DSN) —
@@ -65,16 +69,15 @@ Monitor):
 - **How a trailing word is read.** The suffix is parsed as English, and silence
   must be *earned* — the default when anything is uncertain is a warning, never a
   pass. Concretely:
-  - A **credential phrase** (`SERVICE_ROLE`, `SECRET_KEY`, `WEBHOOK_SECRET`,
-    `JWT_SECRET`, `SIGNING_SECRET`, `ENCRYPTION_KEY`, `SESSION_SECRET`,
-    `CLIENT_SECRET`, `ADMIN_KEY`, `MASTER_KEY`, `DATABASE_URL`…) followed by a
-    **config** word still **fails**: `SERVICE_ROLE_KEY_MAX`,
-    `STRIPE_WEBHOOK_SIGNING_SECRET_MODE`, `SERVICE_ROLE_KEY_ROTATION` all break
-    the build.
+  - A **never-public credential** (`SERVICE_ROLE`, any `*_SECRET`, private/master
+    key, a connection string, an LLM key) followed by a **config** word still
+    **fails**: `SERVICE_ROLE_KEY_MAX`, `STRIPE_WEBHOOK_SIGNING_SECRET_MODE`,
+    `SERVICE_ROLE_KEY_ROTATION` all break the build.
   - A **true pointer** word (`URL`, `DOCS`, `HEADER`, `NAME`, `ENDPOINT`) right
-    after a phrase means the variable *points at* the credential — `API_KEY_HEADER`,
-    `SERVICE_ROLE_KEY_DOCS_URL` — and is cleared (or, when the stem is itself a
-    bare secret word, warned). A pointer word never breaks the build.
+    after such a credential is ambiguous, not proof it points away — there is no
+    safe `NEXT_PUBLIC_SERVICE_ROLE_KEY_URL` — so it **warns** rather than passes.
+    After a name that *can* be public (`API_KEY_HEADER`) a pointer clears. Either
+    way a pointer never breaks the build.
   - The **known floor:** a *bare* `PRIVATE`/`PASSWORD`/`TOKEN` followed by a
     config word reads as a config name and is cleared — `PASSWORD_MIN_LENGTH`,
     `PRIVATE_BETA`, `TOKEN_REFRESH_INTERVAL`, and as a cost `DB_PASSWORD_FLAG`.
@@ -84,8 +87,10 @@ Monitor):
 - **A known-public vendor key is never flagged.** Supabase anon, Stripe
   publishable, Paddle client token, Firebase, PostHog, Mixpanel and the rest are
   allow-listed by design — a browser key that is public by the vendor's own docs
-  must not break a build. An unknown vendor's genuinely-public `*_API_KEY` will
-  fail; `--allow NEXT_PUBLIC_THAT_NAME` is the escape hatch.
+  must not break a build. An unknown vendor's `*_API_KEY` (Alchemy, Infura,
+  Weglot…) **warns**, not fails — a generic API key may legitimately be a public
+  browser key, so it is surfaced without breaking CI. Gate on it with
+  `--fail-on warn`, or silence one with `--allow NEXT_PUBLIC_THAT_NAME`.
 - **Pages Router method dispatch we cannot parse** — a `pages/api` handler that
   writes and never mentions `req.method` is flagged (it answers every verb). One
   that *does* consult `req.method` in a shape the matcher doesn't recognize

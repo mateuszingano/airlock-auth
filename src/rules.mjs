@@ -246,7 +246,7 @@ function suffixSegments(s) {
  *    end-anchor existed in the first place. Segment matching gives that
  *    protection without caring what comes after.
  */
-function matchesSecret(suffix, { phrases, words }) {
+function matchesSecret(suffix, { phrases, words }, { neverPublic = false } = {}) {
   const segs = suffixSegments(suffix)
   const glued = canonicalSuffix(suffix)
 
@@ -349,11 +349,16 @@ function matchesSecret(suffix, { phrases, words }) {
     if (strength === 'word' && SOFTENING_WORDS.has(matchedWord) && known(tail[0])) return 'no'
 
     // (2) A TRUE POINTER word immediately after a credential PHRASE — URL, DOCS,
-    // HEADER, NAME. The phrase names the credential AND the pointer proves this
-    // variable points at it rather than holds it: `API_KEY_HEADER` is a header
-    // name, `SERVICE_ROLE_KEY_DOCS_URL` a link. A bare hard word does NOT get
-    // this — `SECRET_ENDPOINT` reads as "the secret", not "an endpoint".
-    if (strength === 'phrase' && POINTER_TAIL.has(tail[0])) return 'no'
+    // HEADER, NAME — clears the finding when the phrase is one that CAN name a
+    // legitimately public value: `API_KEY_HEADER` is a header name, and a public
+    // browser API key is a real thing.
+    //
+    // A phrase that has NO public form (`SERVICE_ROLE`, `PRIVATE_KEY`,
+    // `MASTER_KEY`, every `*_SECRET`, a `DATABASE_URL`) does NOT get cleared by a
+    // pointer: there is no `NEXT_PUBLIC_SERVICE_ROLE_KEY_URL` that is safe, so
+    // `_URL`/`_ENDPOINT`/`_PATH` after it is genuinely ambiguous, not proof it
+    // points away. Those warn. `neverPublic` is true exactly for the HARD set.
+    if (strength === 'phrase' && POINTER_TAIL.has(tail[0])) return neverPublic ? 'ambiguous' : 'no'
 
     // A config word after a credential PHRASE is still the credential and breaks
     // the build: no public variable is named "service role" or "webhook secret",
@@ -425,8 +430,24 @@ const SECRETY_MATCH = {
 // `ENCRYPTION_KEY`, `SIGNING_SECRET` — were silenced outright by any config or
 // pointer word after them, so `NEXT_PUBLIC_STRIPE_WEBHOOK_SIGNING_SECRET_MODE`
 // read clean while the README promised to catch exactly that.
+// The build-breaking (fail) set: names that NO vendor ships in the browser on
+// purpose. Two kinds live here now:
+//  - the credential phrases above (service_role, *_SECRET, private/master key…);
+//  - connection strings and provider secret keys that are secret BY THE NOUN,
+//    regardless of vendor: a `POSTGRES_URL`, a `CONNECTION_STRING`, a `MONGODB_URI`,
+//    an LLM-provider key, a `STRIPE_SK`, a `GITHUB_PAT`. These moved up from the
+//    soft set so the README's promise ("connection string, LLM key → fail") holds.
+// Deliberately NOT here (they stay a `warn`, see SECRETY_MATCH): a generic
+// `*_API_KEY`, a bare `DATABASE_URL`, a bare `ACCESS_KEY`. Alchemy/Infura/Weglot
+// ship a public browser `*_API_KEY`, a `DATABASE_URL` may be Firebase's public
+// one, and Unsplash ships a public `ACCESS_KEY` — failing those breaks a real
+// project's CI on day one, the exact false alarm this tool exists to avoid. The
+// line is the NOUN, not a vendor allow-list: "postgres url" is never public,
+// "database url" might be; a `*_SECRET`/`SK`/`PAT` never is, a bare "access key"
+// might be. AWS's genuine secret (`AWS_SECRET_ACCESS_KEY`) is still caught — by
+// the bare word SECRET, not by "access key".
 const HARD_SECRET_MATCH = {
-  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN')],
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN'), phrase('ENCRYPTION KEY'), phrase('ENCRYPTION SECRET'), phrase('SIGNING KEY'), phrase('SIGNING SECRET'), phrase('WEBHOOK SECRET'), phrase('SESSION SECRET'), phrase('JWT SECRET'), phrase('AUTH SECRET'), phrase('NEXTAUTH SECRET'), phrase('CLIENT SECRET'), phrase('APP SECRET'), phrase('REFRESH TOKEN'), phrase('CONNECTION STRING'), phrase('MONGODB URI'), phrase('MONGO URL'), phrase('REDIS URL'), phrase('POSTGRES URL'), phrase('STRIPE SK'), phrase('GITHUB PAT'), ...VENDOR_KEYS],
   words: ['PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'SECRET', 'SIGNING', 'ENCRYPTION', 'CREDENTIAL', 'CREDENTIALS'],
 }
 
@@ -706,23 +727,25 @@ export function scanSecrets(rawText, file) {
     // separators to tell whole segments apart (see matchesSecret).
     const suffix = name.slice('NEXT_PUBLIC_'.length)
     if (seen.has(name)) continue
-    // A NEXT_PUBLIC_ name that reads as a secret and is NOT a known-public
-    // vendor key breaks the build. The README's rule table promises exactly
-    // that for "API key, token, access key, database URL, LLM-provider key", and
-    // the code now delivers it rather than quietly warning. Known-public vendor
-    // keys (Mixpanel, Firebase, Paddle, Stripe-publishable…) are exempted by
-    // PUBLIC_OK before this runs, so the day-one false alarm they would cause
-    // never happens.
+    // Two tiers, split by whether the noun can EVER be legitimately public:
+    //  - HARD (service_role, *_SECRET, private/master key, connection strings,
+    //    access keys, LLM keys) → fail. No vendor ships these in the browser, so
+    //    a `hardV === 'yes'` breaks the build. The README's rule table promises
+    //    exactly this for "access key, database URL, LLM-provider key".
+    //  - SOFT (a generic *_API_KEY / *_TOKEN that is not a known-public vendor
+    //    key) → warn, NOT a build break. Alchemy, Infura, Weglot ship a public
+    //    browser `*_API_KEY` by design; failing those is the false alarm that
+    //    gets the gate uninstalled on day one. `--fail-on warn` gates on them for
+    //    teams that want it. Known-public vendor keys are exempted by PUBLIC_OK.
     //
-    // The one non-fail secret verdict is `ambiguous`: a config/pointer word
-    // downstream of the secret (`SERVICE_ROLE_KEY_ROTATION`, `API_KEY_DOCS_URL`).
-    // We can neither prove it holds the credential nor prove it points away, so
-    // it WARNS — the old code answered silence here, which is how a service_role
-    // key walked past the gate.
-    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH)
+    // AMBIGUOUS in either tier → warn: a config/pointer word downstream of the
+    // secret (`CRON_SECRET_ROTATION`, `SERVICE_ROLE_KEY_URL`). We can neither
+    // prove it holds the credential nor prove it points away, so it WARNS — the
+    // old code answered silence here, which is how a service_role key walked past.
+    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH, { neverPublic: true })
     const softV = PUBLIC_OK.test(canonicalSuffix(suffix)) ? 'no' : matchesSecret(suffix, SECRETY_MATCH)
-    const breaksBuild = hardV === 'yes' || softV === 'yes'
-    const warns = hardV === 'ambiguous' || softV === 'ambiguous'
+    const breaksBuild = hardV === 'yes'
+    const warns = softV === 'yes' || softV === 'ambiguous' || hardV === 'ambiguous'
     if (!breaksBuild && !warns) continue
     seen.add(name)
     out.push(

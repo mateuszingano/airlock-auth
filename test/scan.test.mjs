@@ -460,23 +460,41 @@ test('AUDIT-FIX: an unambiguous secret still FAILS', () => {
   }
 })
 
-// OWNER DECISION (audit 20/07, round 3): the README's rule table promises that
-// a NEXT_PUBLIC_ "API key / token / access key / database URL / LLM key" FAILS
-// the build. The owner chose to make the code match the promise rather than
-// soften the table. So a secret-reading name that is NOT a known-public vendor
-// key (those are exempted by PUBLIC_OK first) now breaks the build. This
-// reverses the earlier warn tier deliberately — the trade-off (an unknown
-// vendor's genuinely-public `*_API_KEY` now fails CI) was accepted with eyes
-// open, and is escapable per-name with `--allow`.
-test('a generic unknown secret name breaks the build (owner decision, was warn)', () => {
-  const f = scanSecrets('const k = process.env.NEXT_PUBLIC_WIDGETCO_API_KEY', 'a.ts')
-  assert.equal(f.length, 1)
-  assert.equal(f[0].severity, 'fail')
-
-  // …but a known-public vendor key is still exempt — no day-one false alarm.
-  for (const v of ['NEXT_PUBLIC_MIXPANEL_TOKEN', 'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY']) {
-    assert.equal(scanSecrets(`const k = process.env.${v}`, 'a.ts').length, 0, `${v} stays clean`)
+// OWNER DECISION (audit 20/07, round 4): the fail vs warn line is drawn by
+// whether the NOUN can EVER be legitimately public, NOT by a vendor allow-list.
+// A round-3 attempt made every non-exempt secret-shaped name FAIL, which broke
+// CI for Alchemy/Infura/Weglot — real vendors that ship a public browser
+// `*_API_KEY`. This splits the two:
+//   - a noun that is never public (connection string, postgres url, LLM key,
+//     *_SK, *_PAT, *_SECRET) → fail;
+//   - a noun that a vendor may ship public (a generic `*_API_KEY`, a bare
+//     `DATABASE_URL`, a bare `ACCESS_KEY`) → warn, gate with `--fail-on warn`.
+test('fail vs warn is drawn by whether the noun can ever be public', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
   }
+
+  // Never public → fail.
+  for (const v of [
+    'NEXT_PUBLIC_POSTGRES_URL', 'NEXT_PUBLIC_CONNECTION_STRING', 'NEXT_PUBLIC_MONGODB_URI',
+    'NEXT_PUBLIC_REDIS_URL', 'NEXT_PUBLIC_ANTHROPIC_KEY', 'NEXT_PUBLIC_OPENAI_KEY',
+    'NEXT_PUBLIC_GITHUB_PAT', 'NEXT_PUBLIC_STRIPE_SECRET_KEY', 'NEXT_PUBLIC_AWS_SECRET_ACCESS_KEY',
+  ]) assert.equal(sev(v), 'fail', `${v} is never legitimately public — must fail`)
+
+  // May be a vendor's public browser value → warn, not a build break. This is
+  // what stops the gate breaking CI for Alchemy/Infura/Weglot on day one.
+  for (const v of [
+    'NEXT_PUBLIC_ALCHEMY_API_KEY', 'NEXT_PUBLIC_INFURA_API_KEY', 'NEXT_PUBLIC_WEGLOT_API_KEY',
+    'NEXT_PUBLIC_WIDGETCO_API_KEY', 'NEXT_PUBLIC_DATABASE_URL', 'NEXT_PUBLIC_SOME_TOKEN',
+  ]) assert.equal(sev(v), 'warn', `${v} may be a public vendor key — warn, don't break the build`)
+
+  // Known-public vendor keys stay fully exempt — not even a warning.
+  for (const v of [
+    'NEXT_PUBLIC_MIXPANEL_TOKEN', 'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN',
+    'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_UNSPLASH_ACCESS_KEY',
+    'NEXT_PUBLIC_FIREBASE_DATABASE_URL',
+  ]) assert.equal(sev(v), 'clean', `${v} is public by design — stays clean`)
 })
 
 test('AUDIT-FIX: reading the signature header is NOT verifying it', () => {
