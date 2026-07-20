@@ -2,9 +2,13 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import { scanSecrets, scanRoute, scanPagesRoute, scanServerAction, isRouteFile, isPagesApiFile, isEnvFile, isSourceFile } from './rules.mjs'
+import { scanSecrets, scanRoute, scanPagesRoute, scanServerAction, isRouteFile, isPagesApiFile, isEnvFile, isSourceFile, stripJsComments } from './rules.mjs'
 
-const SKIP = new Set(['node_modules', '.next', '.git', 'dist', 'build', 'coverage', '.turbo', '.vercel'])
+// Never yours, wherever it appears. (`.next`, `.git`, `.turbo`, `.vercel` are
+// dot-directories and are already skipped at any depth by the rule above.)
+const ALWAYS_SKIP = new Set(['node_modules'])
+// Build output at the project root — but legitimate route segments inside app/.
+const ROOT_ONLY_SKIP = new Set(['dist', 'build', 'coverage'])
 
 // A hand-written route/env file is never this big; beyond it, the file is
 // generated or minified (a bundle, a data blob) with no real auth signal, and
@@ -12,7 +16,7 @@ const SKIP = new Set(['node_modules', '.next', '.git', 'dist', 'build', 'coverag
 // `skipped`, never silently (the brand rule: no silent caps).
 const MAX_FILE_BYTES = 1_000_000
 
-export async function collectFiles(root) {
+export async function collectFiles(root, { skippedDirs = [] } = {}) {
   const out = []
   async function walk(d) {
     let entries
@@ -22,11 +26,32 @@ export async function collectFiles(root) {
       return
     }
     for (const e of entries) {
-      if (e.name.startsWith('.') && !e.name.startsWith('.env')) {
-        if (e.isDirectory()) continue
-      }
-      if (SKIP.has(e.name)) continue
       const p = join(d, e.name)
+      if (e.name.startsWith('.') && !e.name.startsWith('.env')) {
+        // A dot-directory is build/tooling output — but record it, because a
+        // silently skipped tree is indistinguishable from a clean one.
+        if (e.isDirectory()) { skippedDirs.push(relative(root, p) || e.name); continue }
+      }
+      // Two different kinds of "skip", and collapsing them caused a bug in each
+      // direction:
+      //
+      // ROOT-ONLY (`dist`, `build`, `coverage`). These are build output at the
+      // project root and ROUTES inside app/ — `app/api/build/route.ts` is a
+      // plausible and privileged rebuild endpoint. Skipping the name at any
+      // depth made those invisible.
+      //
+      // ANY-DEPTH (`node_modules`). Never yours, at any depth. Loosening the
+      // rule to fix the case above took this with it, so a nested
+      // `app/api/node_modules/` got walked: thousands of third-party files
+      // scanned, and findings reported against code the reader cannot fix.
+      if (e.isDirectory() && ALWAYS_SKIP.has(e.name)) {
+        skippedDirs.push(relative(root, p) || e.name)
+        continue
+      }
+      if (e.isDirectory() && ROOT_ONLY_SKIP.has(e.name) && d === root) {
+        skippedDirs.push(relative(root, p) || e.name)
+        continue
+      }
       if (e.isDirectory()) await walk(p)
       else if (isSourceFile(p) || isEnvFile(p)) out.push(p)
     }
@@ -45,9 +70,13 @@ function short(file, dir) {
  * @returns {Promise<{files:number, findings:Array, allowed:Array, problems:number, warnings:number, passed:boolean}>}
  */
 export async function scan({ dir, files, allow = [], authFns = [] } = {}) {
-  const all = files || (await collectFiles(dir))
+  // Directories the walker skipped (build output, dot-dirs) are collected and
+  // reported alongside oversized files — an unscanned tree must be visible, not
+  // inferred from a clean result.
+  const skippedDirs = []
+  const all = files || (await collectFiles(dir, { skippedDirs }))
   let findings = []
-  const skipped = []
+  const skipped = skippedDirs.map((d) => `${d}/ (directory)`)
   const seenSecret = new Set() // dedupe a secret name flagged across many files
 
   for (const file of all) {
@@ -60,6 +89,37 @@ export async function scan({ dir, files, allow = [], authFns = [] } = {}) {
     }
     const text = await readFile(file, 'utf8')
     const label = short(file, dir)
+
+    // A file that ends INSIDE an unterminated comment, string or template was
+    // never really read: everything after the opener is blanked, so a secret or
+    // an unguarded handler further down simply vanishes and the file reports
+    // clean. Proven: a stray `/*` above a NEXT_PUBLIC_..._SERVICE_ROLE_KEY
+    // produced "✓ No exposed secrets" and exit 0.
+    //
+    // stripJsComments has always been able to report this through its `state`
+    // out-param — and nothing ever passed one, so the detection was dead code
+    // while the README promised it worked. It runs here, once per file, rather
+    // than in each of the four scanners: they all strip the same text, and one
+    // check cannot drift from another.
+    //
+    // It FAILS rather than merely landing in `skipped`, because `skipped` does
+    // not affect the exit code: a security gate must not answer "clean" about
+    // text it could not read.
+    const strip = {}
+    stripJsComments(text, {}, strip)
+    if (strip.unterminated) {
+      skipped.push(`${label} (unreadable: ${strip.unterminated})`)
+      findings.push({
+        rule: 'unparsable',
+        severity: 'fail',
+        file: label,
+        line: 1,
+        object: label,
+        detail: `file ends inside an unterminated ${strip.unterminated}, so everything after it was never analyzed — a secret or an unguarded handler below that point would not be reported. Close it, then re-run.`,
+      })
+      continue
+    }
+
     for (const f of scanSecrets(text, label)) {
       if (seenSecret.has(f.object)) continue
       seenSecret.add(f.object)

@@ -20,7 +20,11 @@ npx airlock-auth ./apps/web
 | `unauth_server_action` | warn | a Server Action (`'use server'`) that writes to the DB with no auth check |
 | `unverified_webhook` | warn | a webhook route that never verifies a signature |
 
-Only **fail** findings break the build. Warnings are printed for review.
+By default only **fail** findings break the build; warnings are printed for
+review. Most rules here emit `warn` — including an unauthenticated mutation — so
+without gating on them they can only ever be *printed*. Use `--fail-on warn`
+(or its alias `--strict`) to make warnings break the build too, and the
+`fail-on` input to do the same in the Action.
 
 **No false alarms by design.** A `NEXT_PUBLIC_*` name that holds a server secret
 (API key, token, access key, service role, secret, password, LLM-provider key) is
@@ -64,6 +68,30 @@ Monitor):
   Prisma (`prisma.x.create/update/delete`) and executed raw SQL — a Supabase
   `.rpc('...')` write (ambiguous: read or write) or another ORM's `.create()` is
   not matched.
+- **Route auth is judged per HANDLER.** A `GET` that calls `getUser()` next to a
+  naked `POST` in the same `route.ts` does **not** clear the `POST` — each
+  exported handler is sliced out and judged on its own. (An earlier release
+  judged this per file; that was a real false negative and it is closed.)
+- **Directories the walker skips** are **reported** in `skipped`, never silently
+  omitted. `node_modules` and dot-directories (`.next`, `.git`, `.turbo`,
+  `.vercel`) are skipped at **any** depth. `dist`, `build` and `coverage` are
+  skipped **only at the project root** — inside `app/`, they are legitimate
+  route segments, and `app/api/build/route.ts` is a plausible privileged
+  endpoint that must be checked.
+- **Files over 1 MB** are skipped and reported, on the assumption that they are
+  generated or minified.
+
+**How code is read.** Comments, string literals, template literals and regex
+literals are neutralized before any rule runs, so a signal that only appears
+inside one of them never counts as real code. If a file ends inside an
+unterminated string, template or block comment, everything after the opener was
+unreadable — so that file is reported as `unparsable` and **fails** the gate. It
+is never reported as clean: a security gate must not answer "clean" about text it
+could not read. (This detection existed but was never wired to a caller in
+earlier releases, so the promise was true of the code and false of the product.)
+Type annotations
+are ignored rather than parsed: this is a tokenizer, not a TypeScript compiler,
+which is why the package still has **zero dependencies**.
 
 ## In CI (GitHub Actions)
 

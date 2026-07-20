@@ -64,7 +64,59 @@ const HARD_SECRET = /(?:(?:SERVICEROLE|PRIVATE|PASSWORD|PASSWD|SECRET|SIGNING|EN
 const PUBLIC_OK = /ANON|PUBLISHABLE|SITEKEY|CLIENTID|CLIENTTOKEN|MEASUREMENTID|MAPBOX|MAPS|TURNSTILE|RECAPTCHA|HCAPTCHA|ALGOLIA|POSTHOG|FIREBASE|VAPID|STREAMAPIKEY|GETSTREAM|LIVEKIT|LIVEBLOCKSPUBLIC|SEGMENTWRITE|SENTRYDSN|MIXPANEL|AMPLITUDE|CONTENTFUL|CLARITY|BUGSNAG|GIPHY|TINYMCE|UNSPLASH|INTERCOM|CRISP|HOTJAR|PLAUSIBLE|FATHOM|GOOGLETAG|GTM|PUSHER|ABLY|PADDLE|STRIPEPUBLISH/
 
 // A mutating export in an App Router route handler.
-const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|PUT|PATCH|DELETE)\b/g
+// Every way Next.js accepts a route handler export, not just the two most
+// common. The old pattern knew `export function POST` and `export const POST =`
+// and nothing else, so the idiomatic ways to share one handler across verbs —
+// `export { handler as POST }` and `export const { POST } = handlers` — were
+// invisible. That is exactly where a mutating method sneaks in unnoticed.
+const MUTATION_VERBS = 'POST|PUT|PATCH|DELETE'
+const MUTATION_PATTERNS = [
+  // export [async] function POST(...)   |   export const POST = ...
+  new RegExp(String.raw`(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(${MUTATION_VERBS})\b`, 'g'),
+  // export { handler as POST, handler as DELETE }   |   export { POST }
+  new RegExp(String.raw`export\s*\{[^}]*?\b(?:as\s+)?(${MUTATION_VERBS})\b[^}]*?\}`, 'g'),
+  // export const { POST, DELETE } = handlers   |   export let { PUT } = x
+  new RegExp(String.raw`export\s+(?:const|let|var)\s*\{[^}]*?\b(${MUTATION_VERBS})\b[^}]*?\}`, 'g'),
+]
+
+/**
+ * Build the auth-signal matcher, folding in the user's own helper names.
+ *
+ * Each custom name is anchored at word boundaries AND required to be CALLED, for
+ * the same reason the built-in helpers are: naming a function is not invoking
+ * it. Without the boundary, `--auth-fn e` turned every letter `e` in the file
+ * into an auth signal and silently cleared the entire project — a one-character
+ * typo that disables the scanner with no warning. Names shorter than three
+ * characters are refused outright: no real helper is named `db` or `e`, and the
+ * blast radius of accepting one is the whole scan.
+ */
+function buildAuthRe(authFns = []) {
+  const usable = authFns.map((f) => String(f).trim()).filter((f) => f.length >= 3)
+  if (!usable.length) return AUTH
+  // Same CALL shape as the built-ins, so a user's helper called with a type
+  // argument (`meuPortao<T>(req)`) counts too.
+  const custom = usable.map((f) => String.raw`\b${escapeRe(f)}` + CALL).join('|')
+  return new RegExp(`${AUTH.source}|${custom}`, 'i')
+}
+
+/** Names too short to be used as an auth-helper token (see buildAuthRe). */
+export function rejectedAuthFns(authFns = []) {
+  return authFns.map((f) => String(f).trim()).filter((f) => f && f.length < 3)
+}
+
+/** All mutating verbs this file exports as route handlers, in any export form. */
+function mutatingExports(text) {
+  const found = new Set()
+  for (const re of MUTATION_PATTERNS) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(text))) {
+      // A `{ … }` export can name several verbs at once — collect them all.
+      for (const v of m[0].match(new RegExp(String.raw`\b(?:${MUTATION_VERBS})\b`, 'g')) || []) found.add(v)
+    }
+  }
+  return [...found]
+}
 
 // Signals that the handler actually authenticates the caller. Covers the inline
 // Supabase/Clerk/NextAuth calls AND the far more common pattern of a centralized
@@ -85,14 +137,44 @@ const MUTATION = /(?:export\s+(?:async\s+)?function\s+|export\s+const\s+)(POST|P
 // `getToken(` and a bare `.auth` were REMOVED: both are overloaded (a CSRF/captcha
 // token read, an unrelated `.auth` property) and silently cleared real unguarded
 // routes. `.auth` now requires an actual method call (supabase.auth.getUser()).
-const AUTH = /getUser\s*\(|getSession\s*\(|getServerSession|currentUser\s*\(|getAuth\s*\(|\bauth\s*\(\s*\)|isAuthenticated|\.auth\.\w+\s*\(|\b(?:authorize|protectRoute|protect|restrictTo|mustBeLoggedIn|can)\s*\(|\b(?:require|ensure|assert|check|verify|resolve|guard|with)\w{0,40}(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)/i
+//
+// EVERY alternative must end in an actual CALL — `\s*\(`. The centralized-helper
+// group used to match the bare NAME, so merely having the identifier present
+// cleared the route: an `import { requireUser } from '@/lib/auth'` that was never
+// called made an unguarded handler look guarded, and a local variable named
+// `checkUserAgent` did the same via `check…User`. An auth helper that is imported
+// and not invoked is precisely the bug this tool should be finding.
+// "Is called" in TypeScript may carry a type argument between the name and the
+// parenthesis: `resolverAcessoEscrita<{ familia_id: string }>(supabase)`. A bare
+// `\s*\(` misses that, and in a real TS codebase it misses a LOT — measured on
+// the ZINGUI.LAR app: warnings went 2 → 38, and 34 of those were routes that DO
+// call their auth helper, just generically. That is the false alarm this product
+// says gets a gate uninstalled on day one.
+// The inner class excludes `<`/`>` so it cannot run away across an expression.
+const CALL = String.raw`\s*(?:<[^<>]{0,120}>)?\s*\(`
+const AUTH = new RegExp(
+  [
+    `getUser${CALL}`, `getSession${CALL}`, `getServerSession${CALL}`, `currentUser${CALL}`, `getAuth${CALL}`,
+    String.raw`\bauth\s*\(\s*\)`, `isAuthenticated${CALL}`, String.raw`\.auth\.\w+${CALL}`,
+    String.raw`\b(?:authorize|protectRoute|protect|restrictTo|mustBeLoggedIn|can)${CALL}`,
+    String.raw`\b(?:require|ensure|assert|check|verify|resolve|guard|with)\w{0,40}(?:Auth|User|Session|Access|Acesso|Permiss|Autoriz|Membro|Owner|Login|Ident|Escrita)\w{0,20}${CALL}`,
+  ].join('|'),
+  'i'
+)
+
 
 // Signals that a webhook actually VERIFIES its payload signature. This must be a
 // real verification operation — merely mentioning "signature" (e.g. reading the
 // `paddle-signature` header and ignoring it) is exactly the unverified webhook
 // this rule exists to catch, so the bare words `signature`/`verified`/`hmac` are
 // deliberately NOT accepted.
-const SIGVERIFY = /constructEvent\s*\(|createHmac\s*\(|createVerify\s*\(|timingSafeEqual\s*\(|crypto\.subtle\.verify\s*\(|\bsvix\b|new\s+Webhook\s*\(|\.verify\s*\(|verify(?:Signature|Webhook|Event|Payload|Header)\s*\(|(?:validate|isValid|check)Signature\s*\(|\.unmarshal\s*\(/i
+// The bare `.verify(` alternative was removed. It cleared a webhook on ANY
+// object with that method — a `schema.verify(body)` payload validation, a
+// `jwt.verify()` from an unrelated concern — so a route that never checked the
+// provider signature looked verified. A receiver that plausibly holds the
+// signature (`wh`, `webhook`, `svix`, `crypto`, `stripe`, …) still counts, and
+// so does any qualified verify-name.
+const SIGVERIFY = /constructEvent\s*\(|createHmac\s*\(|createVerify\s*\(|timingSafeEqual\s*\(|crypto\.subtle\.verify\s*\(|\bsvix\b|new\s+Webhook\s*\(|\b(?:wh|webhook|svix|crypto|stripe|paddle|clerk|signature|sig)\w{0,20}\.verify\s*\(|verify(?:Signature|Webhook|Event|Payload|Header)\s*\(|(?:validate|isValid|check)Signature\s*\(|\.unmarshal\s*\(/i
 
 // A route is a webhook by its PATH. Beyond the literal word, a provider-qualified
 // callback/notify/inbound endpoint is one too (/api/stripe/callback,
@@ -124,71 +206,337 @@ function canonicalSuffix(s) {
     .replace(/[_-]/g, '') // then drop ALL separators → one canonical glued form
 }
 
+/**
+ * The suffix as its WORD SEGMENTS: `SERVICE_ROLE_KEY_V2` → [SERVICE, ROLE, KEY, V2].
+ *
+ * Gluing everything (canonicalSuffix) destroyed exactly the information needed to
+ * tell `TOKEN_IZER` from `TOKENIZER`, which is why the patterns had to be anchored
+ * to the END of the string — and that anchor is what let ANY trailing segment
+ * disarm the whole scanner. `NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_V2` was
+ * invisible, and so were `_NEW`, `_PROD`, `_BACKUP`, `_PEM` and a bare digit:
+ * the most natural naming conventions in existence, against the single rule that
+ * could fail a build.
+ */
+function suffixSegments(s) {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2') // APIKey → API_Key
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean)
+}
+
+/**
+ * Does a secret phrase appear in this suffix?
+ *
+ * Two matching modes, because they have different false-positive profiles:
+ *
+ *  · PHRASES are multi-word and distinctive (SERVICEROLE, APIKEY, DATABASEURL).
+ *    They are matched against the GLUED form, so `SERVICE_ROLE_KEY_V2`,
+ *    `serviceRoleKey` and `SERVICEROLEKEY` all hit. A phrase that long does not
+ *    occur inside an innocent word, so substring matching is safe here.
+ *
+ *  · WORDS are single and short (TOKEN, KEY, SECRET). These must match a WHOLE
+ *    SEGMENT and never a substring — that is what keeps `SERVER_TOKENIZER_URL`
+ *    and `ADMIN_KEYCLOAK_URL` from being flagged, which was the reason the
+ *    end-anchor existed in the first place. Segment matching gives that
+ *    protection without caring what comes after.
+ */
+function matchesSecret(suffix, { phrases, words }) {
+  const segs = suffixSegments(suffix)
+  const glued = canonicalSuffix(suffix)
+
+  // What follows the secret words decides whether this is the SECRET or metadata
+  // ABOUT one. `API_KEY_NAME` / `SECRET_HEADER` name a field; `API_KEY_V2` /
+  // `SECRET_PROD` are the thing itself. Distinguishing the two is what lets the
+  // versioned suffixes be caught without re-flagging public config — the old
+  // end-anchor could not tell them apart, so it rejected BOTH.
+  // Two families of harmless tail:
+  //   METADATA — this names or describes a secret (`API_KEY_HEADER`)
+  //   CONFIG   — this is a knob ABOUT a secret, never the secret
+  //              (`PASSWORD_MIN_LENGTH`, `PRIVATE_BETA`, `TOKEN_TTL`)
+  const METADATA_TAIL = ['NAME', 'ID', 'LABEL', 'TYPE', 'PREFIX', 'HEADER', 'FIELD', 'PARAM', 'PLACEHOLDER', 'EXAMPLE', 'HINT']
+  const CONFIG_TAIL = [
+    'ENABLED', 'DISABLED', 'LENGTH', 'SECONDS', 'SECS', 'MS', 'MINUTES', 'HOURS', 'DAYS',
+    'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT', 'MODE', 'COUNT', 'MAX', 'MIN',
+    'LIMIT', 'RETRIES', 'DISPLAY', 'BETA', 'FLAG', 'REQUIRED', 'STRENGTH', 'POLICY',
+    'REFRESH', 'ROTATION', 'REGEX', 'PATTERN', 'RULES',
+  ]
+
+  // The tail is harmless only when EVERY segment after the secret token is one
+  // of those words. Testing just the next segment failed on the common shape:
+  // `PASSWORD_MIN_LENGTH` has `MIN` next, which said nothing, so a trivially
+  // public config var became a CRITICAL telling the reader to ROTATE THE KEY —
+  // a build broken over a number. Requiring the WHOLE tail to be harmless also
+  // keeps the versioned-suffix scar closed: `SERVICE_ROLE_KEY_V2` has `KEY` in
+  // its tail, which is neither metadata nor config, so it is still a fail.
+  const isHarmlessTail = (from) => {
+    const tail = segs.slice(from)
+    if (tail.length === 0) return false
+    return tail.every((seg) => METADATA_TAIL.includes(seg) || CONFIG_TAIL.includes(seg))
+  }
+
+  // A phrase matches when its words appear as CONSECUTIVE whole segments.
+  // Substring-on-glued would be too loose: `ADMIN_KEYCLOAK_URL` contains
+  // "ADMINKEY" and `SERVER_TOKENIZER_URL` contains "SERVERTOKEN" — flagging
+  // those is exactly the false alarm the end-anchor was protecting against.
+  // A plural is the same secret. `SECRETS`, `API_KEYS`, `TOKENS`, `PASSWORDS`
+  // all read clean because every comparison was exact — eleven real secrets in
+  // the measured sample, missed on an `S`.
+  const sameWord = (seg, w) => seg === w || (seg !== undefined && seg === `${w}S`)
+  const runEndsAt = (wordsOfPhrase) => {
+    for (let i = 0; i + wordsOfPhrase.length <= segs.length; i++) {
+      if (wordsOfPhrase.every((w, k) => sameWord(segs[i + k], w))) return i + wordsOfPhrase.length
+    }
+    return -1
+  }
+  for (const p of phrases) {
+    const end = runEndsAt(p.words)
+    if (end !== -1 && !isHarmlessTail(end)) return true
+    // Fallback for a name written with NO separators at all (`SERVICEROLEKEY`):
+    // there are no segments to reason about, so a glued substring is the only
+    // signal available.
+    if (segs.length === 1 && glued.includes(p.glued)) return true
+  }
+  const at = segs.findIndex((seg) => words.some((w) => sameWord(seg, w)))
+  return at !== -1 && !isHarmlessTail(at + 1)
+}
+
+/** `'SERVICE ROLE'` → `{ words: ['SERVICE','ROLE'], glued: 'SERVICEROLE' }` */
+const phrase = (s) => ({ words: s.split(' '), glued: s.replace(/ /g, '') })
+
+const VENDOR_KEYS = ['ANTHROPIC', 'OPENAI', 'OPENROUTER', 'GROQ', 'MISTRAL', 'COHERE', 'REPLICATE', 'HUGGINGFACE', 'PERPLEXITY', 'DEEPSEEK', 'TOGETHER', 'GEMINI', 'XAI'].map((v) => phrase(`${v} KEY`))
+
+// Anything that reads as a server secret.
+const SECRETY_MATCH = {
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SERVICE KEY'), phrase('API KEY'), phrase('ACCESS KEY'), phrase('DATABASE URL'), phrase('DATABASE URI'), phrase('MONGODB URI'), phrase('MONGO URL'), phrase('REDIS URL'), phrase('POSTGRES URL'), phrase('CONNECTION STRING'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('STRIPE SK'), phrase('GITHUB PAT'), ...VENDOR_KEYS],
+  // PASS is how SMTP_PASS / DB_PASS are written in practice; PAT is a personal
+  // access token. Both were missed because only the long spellings were listed.
+  words: ['SECRET', 'PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'CREDENTIAL', 'CREDENTIALS', 'TOKEN', 'ENCRYPTION', 'SIGNING', 'PAT'],
+}
+
+// The strong set the public-vendor allow-list may never wave through.
+// ADMIN/SERVER/MASTER only ever appear as PHRASES with a KEY/TOKEN companion, so
+// a plain ADMIN_URL or ADMIN_EMAIL stays clean while ADMIN_KEY is caught.
+const HARD_SECRET_MATCH = {
+  phrases: [phrase('SERVICE ROLE'), phrase('SVC ROLE'), phrase('SECRET KEY'), phrase('SECRET TOKEN'), phrase('PRIVATE KEY'), phrase('PRIVATE TOKEN'), phrase('ADMIN KEY'), phrase('ADMIN TOKEN'), phrase('SERVER KEY'), phrase('SERVER TOKEN'), phrase('MASTER KEY'), phrase('MASTER TOKEN')],
+  words: ['PRIVATE', 'PASSWORD', 'PASSWD', 'PASS', 'SECRET', 'SIGNING', 'ENCRYPTION', 'CREDENTIAL', 'CREDENTIALS'],
+}
+
 // Strip JS/TS comments so a comment ("// TODO: verify signature") can't fake a
 // signal — while keeping STRING contents intact (a `//` inside "https://..." or
 // "//cdn" is not a comment, and must not swallow a secret on the same line) and
 // preserving newlines so line numbers stay accurate. A tiny scanner that tracks
 // ' " ` strings with escapes; regex-literal edge cases are out of scope.
-export function stripJsComments(src, { blankStrings = false } = {}) {
-  let out = ''
+// Tokens after which a `/` starts a REGEX LITERAL rather than a division. This
+// is the one genuinely ambiguous character in JS lexing, and getting it wrong is
+// what broke this scanner: `const Q = /['"]/g` had its `'` read as the start of a
+// string, which then never closed, so the ENTIRE REST OF THE FILE was blanked.
+// The consequences ran both ways — a real `export function POST` after it became
+// invisible (false negative), and a route that DID call getUser() lost its auth
+// signal and got flagged (false positive).
+//
+// A `/` is division only after something that can END an expression: an
+// identifier, a number, a closing `)`/`]`, or a string. Keywords are the trap —
+// `return /re/.test(x)` is a regex, and `return` is an identifier-shaped token —
+// so the ones that can be followed by an expression are listed explicitly.
+const REGEX_OK_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw',
+  'case', 'do', 'else', 'yield', 'await', 'if', 'while', 'for', 'switch', 'and', 'or', 'not',
+])
+
+/**
+ * Neutralize everything that is not executable code, so a signal found in the
+ * result is a signal in real code.
+ *
+ * Handles line comments, block comments, single/double-quoted strings, template
+ * literals INCLUDING their `${…}` interpolations (which hold real code and must
+ * survive), and regex literals. Offsets and line numbers are preserved exactly:
+ * every construct is replaced by the same number of characters, with newlines
+ * kept, so `line` in a finding still points at the right source line.
+ *
+ * `state` (optional out-param) receives `{ unterminated }` when the file ends
+ * inside a string, template or block comment. That means everything after the
+ * opener was blanked and never analyzed — the caller must report the file as
+ * skipped rather than as clean, for the same reason a gate may not approve text
+ * it could not read.
+ */
+export function stripJsComments(src, { blankStrings = false } = {}, state) {
+  const parts = []
   let i = 0
   const n = src.length
-  let q = null // current string quote char, or null
+  // Last significant (non-whitespace, non-comment) character emitted, plus the
+  // identifier that ended there — together they decide regex vs division.
+  let lastSig = ''
+  let lastWord = ''
+  // Stack so a `${…}` inside a template can itself contain a template.
+  const templateStack = []
+  let unterminated = null
+
+  const push = (s) => parts.push(s)
+  const blankRun = (from, to) => {
+    for (let j = from; j < to; j++) push(src[j] === '\n' ? '\n' : ' ')
+  }
+  const noteSig = (ch) => {
+    if (/\s/.test(ch)) return
+    lastSig = ch
+    if (/[A-Za-z0-9_$]/.test(ch)) lastWord += ch
+    else lastWord = ''
+  }
+
   while (i < n) {
     const c = src[i]
     const c2 = src[i + 1]
-    if (q) {
-      // `blankStrings` blanks the CONTENT of string literals (same length, so all
-      // offsets/line numbers stay valid) while keeping the quotes. A signal that
-      // only appears inside a string is not real code: `console.log("user.auth")`
-      // must not read as an auth check, and reading a header named
-      // 'paddle-signature' must not read as verifying it.
-      if (c === '\\') { out += blankStrings ? '  ' : c + (c2 ?? ''); i += 2; continue } // keep escapes
-      if (c === q) { q = null; out += c; i++; continue }
-      out += blankStrings ? (c === '\n' ? '\n' : ' ') : c
+
+    // Closing a template's `${…}` — back into template text.
+    if (c === '}' && templateStack.length && templateStack[templateStack.length - 1].inExpr) {
+      templateStack[templateStack.length - 1].inExpr = false
+      push('}')
+      i++
+      lastSig = '}'
+      lastWord = ''
+      continue
+    }
+
+    // Inside template TEXT (not an interpolation).
+    if (templateStack.length && !templateStack[templateStack.length - 1].inExpr) {
+      if (c === '\\') { push(blankStrings ? '  ' : src.slice(i, i + 2)); i += 2; continue }
+      if (c === '`') { templateStack.pop(); push('`'); i++; lastSig = '`'; lastWord = ''; continue }
+      if (c === '$' && c2 === '{') {
+        templateStack[templateStack.length - 1].inExpr = true
+        push('${')
+        i += 2
+        lastSig = '{'
+        lastWord = ''
+        continue
+      }
+      push(blankStrings ? (c === '\n' ? '\n' : ' ') : c)
       i++
       continue
     }
+
     if (c === '/' && c2 === '/') {
-      while (i < n && src[i] !== '\n') { out += ' '; i++ }
+      while (i < n && src[i] !== '\n') { push(' '); i++ }
       continue
     }
     if (c === '/' && c2 === '*') {
-      out += '  '; i += 2
-      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { out += src[i] === '\n' ? '\n' : ' '; i++ }
-      if (i < n) { out += '  '; i += 2 }
+      const start = i
+      i += 2
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++
+      if (i >= n) { unterminated = unterminated || 'block comment'; blankRun(start, n); i = n; continue }
+      i += 2
+      blankRun(start, i)
       continue
     }
-    if (c === "'" || c === '"' || c === '`') { q = c; out += c; i++; continue }
-    out += c
+
+    // Regex literal. Blank its contents so a quote or a keyword inside can never
+    // be mistaken for code, and so it cannot leave a string state open.
+    if (c === '/' && startsRegex(lastSig, lastWord)) {
+      const start = i
+      let j = i + 1
+      let inClass = false
+      let closed = false
+      while (j < n) {
+        const ch = src[j]
+        if (ch === '\\') { j += 2; continue }
+        if (ch === '\n') break // an unterminated regex cannot span lines — treat as division
+        if (ch === '[') inClass = true
+        else if (ch === ']') inClass = false
+        else if (ch === '/' && !inClass) { closed = true; j++; break }
+        j++
+      }
+      if (closed) {
+        while (j < n && /[a-z]/i.test(src[j])) j++ // flags
+        blankRun(start, j)
+        i = j
+        lastSig = '/'
+        lastWord = ''
+        continue
+      }
+      // Not a regex after all — fall through and treat `/` as an operator.
+    }
+
+    if (c === '`') {
+      templateStack.push({ inExpr: false })
+      push('`')
+      i++
+      lastSig = '`'
+      lastWord = ''
+      continue
+    }
+
+    if (c === "'" || c === '"') {
+      const quote = c
+      const start = i
+      let j = i + 1
+      let closed = false
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue }
+        if (src[j] === '\n') break // a plain string may not span lines
+        if (src[j] === quote) { closed = true; j++; break }
+        j++
+      }
+      if (!closed) {
+        unterminated = unterminated || 'string literal'
+        // Blank to end of line, then carry on — do NOT swallow the rest of the
+        // file. The `unterminated` flag is what tells the caller this file's
+        // result is untrustworthy.
+        while (j < n && src[j] !== '\n') j++
+      }
+      push(quote)
+      if (blankStrings) blankRun(start + 1, j - (closed ? 1 : 0))
+      else for (let k = start + 1; k < j - (closed ? 1 : 0); k++) push(src[k])
+      if (closed) push(quote)
+      i = j
+      continue
+    }
+
+    push(c)
+    noteSig(c)
     i++
   }
-  return out
+
+  if (templateStack.length) unterminated = unterminated || 'template literal'
+  if (state) state.unterminated = unterminated
+  return parts.join('')
 }
 
+/** Does a `/` at this point begin a regex literal rather than a division? */
+function startsRegex(lastSig, lastWord) {
+  if (!lastSig) return true // start of file
+  if (lastWord && REGEX_OK_KEYWORDS.has(lastWord.toLowerCase())) return true
+  if (/[A-Za-z0-9_$)\]]/.test(lastSig)) return false // ends an expression → division
+  return true // after ( , = : [ ! & | ? { ; etc.
+}
+
+// Case-insensitive for the same reason as isSourceFile: on a case-insensitive
+// filesystem `route.TS` is served exactly like `route.ts`.
 export function isRouteFile(path) {
-  return /(?:^|\/)app\/(?:.*\/)?route\.(?:t|j)sx?$/.test(norm(path))
+  return /(?:^|\/)app\/(?:.*\/)?route\.(?:t|j)sx?$/i.test(norm(path))
 }
 
 export function isEnvFile(path) {
   return /(?:^|\/)\.env(?:\.[\w.-]+)?$/.test(norm(path))
 }
 
+// Case-insensitive: on Windows and macOS the filesystem is case-insensitive, so
+// `route.TS` is a file Next.js serves exactly like `route.ts` — but this test
+// rejected it, and the route vanished from the scan entirely.
 export function isSourceFile(path) {
-  return /\.(?:t|j)sx?$|\.mjs$|\.cjs$/.test(norm(path))
+  return /\.(?:t|j)sx?$|\.mjs$|\.cjs$/i.test(norm(path))
 }
 
 // Pages Router API route — pages/api/**.ts (a lot of real Next apps still use it),
 // excluding _-prefixed files (_middleware, _document, …).
 export function isPagesApiFile(path) {
   const p = norm(path)
-  return /(?:^|\/)(?:src\/)?pages\/api\/.*\.(?:t|j)sx?$/.test(p) && !/(?:^|\/)_[^/]*\.(?:t|j)sx?$/.test(p)
+  return /(?:^|\/)(?:src\/)?pages\/api\/.*\.(?:t|j)sx?$/i.test(p) && !/(?:^|\/)_[^/]*\.(?:t|j)sx?$/i.test(p)
 }
 
 /** app/api/webhooks/paddle/route.ts → /api/webhooks/paddle */
 export function routeUrl(path) {
   const p = norm(path)
-  const m = /(?:^|\/)app\/(.*)\/route\.(?:t|j)sx?$/.exec(p)
+  const m = /(?:^|\/)app\/(.*)\/route\.(?:t|j)sx?$/i.exec(p)
   if (!m) return p
   return '/' + m[1].replace(/\/?\(.*?\)/g, '').replace(/^\/+/, '') // strip route groups (auth)
 }
@@ -196,15 +544,39 @@ export function routeUrl(path) {
 /** pages/api/charge.ts → /api/charge · pages/api/user/index.ts → /api/user */
 export function pagesRouteUrl(path) {
   const p = norm(path)
-  const m = /(?:^|\/)(?:src\/)?pages\/api\/(.*)\.(?:t|j)sx?$/.exec(p)
+  const m = /(?:^|\/)(?:src\/)?pages\/api\/(.*)\.(?:t|j)sx?$/i.exec(p)
   if (!m) return p
   return '/api/' + m[1].replace(/\/index$/, '')
 }
 
+// Newline positions are indexed ONCE per text, then each lookup is a binary
+// search. The previous form rescanned from character 0 on every finding, which
+// is O(text × findings): measured 39ms / 417ms / 4023ms for 500 / 2000 / 8000
+// matches — 4 seconds on a 490KB file, and up to ~16s at the 1MB file cap. The
+// ReDoS bound in AUTH was already in place; this was the quadratic nobody had
+// measured, hiding behind it.
+const lineIndexFor = (text) => {
+  // Memoized on the last text seen: a scan calls this many times for one file,
+  // then moves on, so a single-slot cache gets the full benefit without holding
+  // memory across files.
+  if (lineIndexFor._text === text) return lineIndexFor._nl
+  const nl = []
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') nl.push(i)
+  lineIndexFor._text = text
+  lineIndexFor._nl = nl
+  return nl
+}
+
 function lineOf(text, index) {
-  let line = 1
-  for (let i = 0; i < index && i < text.length; i++) if (text[i] === '\n') line++
-  return line
+  const nl = lineIndexFor(text)
+  let lo = 0
+  let hi = nl.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (nl[mid] < index) lo = mid + 1
+    else hi = mid
+  }
+  return lo + 1
 }
 
 /** Flag NEXT_PUBLIC_* names that hold a secret. Returns findings (deduped per file). */
@@ -223,7 +595,9 @@ export function scanSecrets(rawText, file) {
   let m
   while ((m = re.exec(text))) {
     const name = m[0]
-    const suffix = canonicalSuffix(name.slice('NEXT_PUBLIC_'.length))
+    // RAW suffix — canonicalization happens inside the matchers, which need the
+    // separators to tell whole segments apart (see matchesSecret).
+    const suffix = name.slice('NEXT_PUBLIC_'.length)
     if (seen.has(name)) continue
     // Severity is split so the build-breaking verdict stays unambiguous:
     //  - HARD secret (service_role, *_SECRET, PRIVATE_KEY, ADMIN_KEY…) → fail.
@@ -232,8 +606,8 @@ export function scanSecrets(rawText, file) {
     //    vendor key) → warn. Plenty of vendors ship a browser key with exactly
     //    that name (Mixpanel, Contentful, Amplitude…), so failing the build here
     //    is the false alarm that gets the gate uninstalled on day one.
-    const hard = HARD_SECRET.test(suffix)
-    const soft = SECRETY.test(suffix) && !PUBLIC_OK.test(suffix)
+    const hard = matchesSecret(suffix, HARD_SECRET_MATCH)
+    const soft = matchesSecret(suffix, SECRETY_MATCH) && !PUBLIC_OK.test(canonicalSuffix(suffix))
     if (!hard && !soft) continue
     seen.add(name)
     out.push(
@@ -259,9 +633,16 @@ export function scanRoute(rawText, file, { authFns = [] } = {}) {
   const out = []
   const url = routeUrl(file)
   const methods = []
-  let m
-  MUTATION.lastIndex = 0
-  while ((m = MUTATION.exec(text))) methods.push({ method: m[1], line: lineOf(text, m.index) })
+  for (const re of MUTATION_PATTERNS) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(text))) {
+      const line = lineOf(text, m.index)
+      for (const v of m[0].match(new RegExp(String.raw`\b(?:${MUTATION_VERBS})\b`, 'g')) || []) {
+        if (!methods.some((x) => x.method === v)) methods.push({ method: v, line })
+      }
+    }
+  }
 
   // A route is a webhook only by its PATH — never by merely mentioning the word
   // (a checkout route that references its webhook URL is not itself a webhook).
@@ -274,18 +655,111 @@ export function scanRoute(rawText, file, { authFns = [] } = {}) {
     return out
   }
 
-  const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
-  if (methods.length && !authRe.test(code)) {
-    const names = [...new Set(methods.map((x) => x.method))].join('/')
-    out.push({ rule: 'unauth_mutation', severity: 'warn', file, line: methods[0].line, object: `${names} ${url}`, detail: `mutating handler with no auth check — confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
+  const authRe = buildAuthRe(authFns)
+  // Judge each handler in its OWN segment, not the whole file.
+  //
+  // `authRe.test(code)` asked "does this FILE authenticate anywhere?", so a
+  // `route.ts` exporting a GET that calls getUser() alongside a naked POST read
+  // as clean — and that is a normal, common shape: the read path is guarded, the
+  // write path is the one someone forgot. `scanServerAction` already sliced by
+  // export for exactly this reason (its comment even names it "the file-level
+  // false negative"); scanRoute simply never inherited the fix.
+  const unguarded = []
+  for (const { method, line } of methods) {
+    if (isHandlerAuthed(code, method, authRe)) continue
+    unguarded.push({ method, line })
+  }
+  if (unguarded.length) {
+    const names = [...new Set(unguarded.map((x) => x.method))].join('/')
+    out.push({ rule: 'unauth_mutation', severity: 'warn', file, line: unguarded[0].line, object: `${names} ${url}`, detail: `mutating handler with no auth check — confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
   }
   return out
+}
+
+/**
+ * Does the segment belonging to `method` contain an auth signal?
+ *
+ * The segment runs from this handler's export to the next top-level export (or
+ * end of file). When the handler cannot be located as its own declaration — an
+ * aliased re-export like `export { handler as POST }`, where the body lives
+ * elsewhere in the file — we fall back to judging the whole file, because the
+ * shared body genuinely is shared. Falling back keeps that case at today's
+ * behaviour rather than inventing a false positive.
+ */
+function isHandlerAuthed(code, method, authRe) {
+  const decl = new RegExp(String.raw`export\s+(?:async\s+)?(?:function\s+${method}\b|const\s+${method}\s*=)`, 'g')
+  const m = decl.exec(code)
+  if (!m) return authRe.test(code) // shared/aliased handler → file-level judgement
+  // Next top-level export after this one bounds the segment.
+  const after = new RegExp(String.raw`export\s+(?:async\s+)?(?:function|const|let|var|\{)`, 'g')
+  after.lastIndex = m.index + m[0].length
+  const next = after.exec(code)
+  const segment = code.slice(m.index, next ? next.index : code.length)
+  if (authRe.test(segment)) return true
+  // The handler may delegate to a LOCAL helper declared above the exports —
+  // the single most common shape in a real route file:
+  //
+  //   async function checkAdmin() { … supabase.auth.getUser() … }
+  //   export async function GET()   { const u = await checkAdmin(); … }
+  //   export async function PATCH() { const u = await checkAdmin(); … }
+  //
+  // Slicing per handler put that helper in NEITHER segment, so both handlers
+  // read as unguarded. Measured on a real app: 3 routes newly flagged, all of
+  // them genuinely guarded. The module prelude is shared by construction, so a
+  // helper defined there and CALLED here counts — while an auth call sitting
+  // inside a sibling HANDLER still does not, which is the bug this all fixed.
+  for (const name of localAuthHelpers(code.slice(0, firstExportIndex(code)), authRe)) {
+    if (new RegExp(String.raw`\b${name}\s*(?:<[^<>]{0,120}>)?\s*\(`).test(segment)) return true
+  }
+  return false
+}
+
+/** Offset of the first top-level export, or end of file. */
+function firstExportIndex(code) {
+  const m = /export\s+(?:async\s+)?(?:function|const|let|var|default|\{)/.exec(code)
+  return m ? m.index : code.length
+}
+
+/** Names of functions declared in `prelude` whose body carries an auth signal. */
+function localAuthHelpers(prelude, authRe) {
+  const names = []
+  const re = /(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g
+  let m
+  while ((m = re.exec(prelude))) {
+    const name = m[1] || m[2]
+    // Body = from this declaration to the next one (good enough: we only need to
+    // know whether an auth call appears inside it).
+    const start = m.index
+    re.lastIndex = m.index + m[0].length
+    const nextDecl = /(?:async\s+)?function\s+[A-Za-z_$]|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_$])/g
+    nextDecl.lastIndex = m.index + m[0].length
+    const nx = nextDecl.exec(prelude)
+    if (authRe.test(prelude.slice(start, nx ? nx.index : prelude.length))) names.push(name)
+  }
+  return names
 }
 
 // A Pages Router handler ships one default export and switches on `req.method`,
 // so we flag it only when it EXPLICITLY handles a mutating method (a GET-only
 // handler stays silent). Webhooks are judged on the signature, same as App Router.
-const PAGES_MUTATION = /(?:req\.method\s*===?\s*|case\s+)['"`](post|put|patch|delete)['"`]/i
+// A Pages Router handler declares its method in several idiomatic ways. Only
+// `===`/`case` were recognized, but the NEGATIVE guard clause —
+// `if (req.method !== 'POST') return res.status(405).end()` — is *the* canonical
+// way to write a POST-only endpoint, and it was invisible. So was
+// `req.method.toUpperCase()`. Pages Router coverage is a README claim, so half
+// the idiom going unread is a promise not kept.
+const PAGES_MUTATION = new RegExp(
+  String.raw`(?:` +
+    // req.method === 'POST'  |  req.method == "POST"  |  case 'POST':
+    String.raw`req\.method(?:\.toUpperCase\(\))?\s*===?\s*|case\s+` +
+    String.raw`)['"\`](post|put|patch|delete)['"\`]`,
+  'i'
+)
+
+// `if (req.method !== 'GET') …` means "everything except GET is handled here",
+// which includes the mutating verbs. Treated as mutating unless the excluded
+// method is itself the only mutating one.
+const PAGES_MUTATION_NEGATED = /req\.method(?:\.toUpperCase\(\))?\s*!==?\s*['"`](get|head|options|post|put|patch|delete)['"`]/i
 
 export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
@@ -301,10 +775,19 @@ export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
     return out
   }
 
-  const mut = PAGES_MUTATION.exec(text)
+  let mut = PAGES_MUTATION.exec(text)
+  if (!mut) {
+    // The negative guard clause. `if (req.method !== 'POST') return 405` reads
+    // "anything that is not POST stops here" — so everything BELOW it runs only
+    // for POST, and the handler is POST-only. That is the canonical way to write
+    // a single-verb endpoint, and it was invisible. The mirror case,
+    // `!== 'GET'`, leaves a GET-only handler, which is not mutating.
+    const neg = PAGES_MUTATION_NEGATED.exec(text)
+    if (neg && /^(post|put|patch|delete)$/i.test(neg[1])) mut = neg
+  }
   if (!mut) return out // GET-only or no explicit mutating method → not flagged
 
-  const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
+  const authRe = buildAuthRe(authFns)
   if (!authRe.test(code)) {
     out.push({ rule: 'unauth_mutation', severity: 'warn', file, line: lineOf(text, mut.index), object: `${url} (pages)`, detail: `mutating handler with no auth check — confirm the caller is authorized (getUser/getSession/auth or your auth helper), or allow-list it if it is intentionally public.` })
   }
@@ -357,10 +840,26 @@ export function scanServerAction(rawText, file, { authFns = [] } = {}) {
   const text = stripJsComments(rawText)
   const code = stripJsComments(rawText, { blankStrings: true })
   if (!USE_SERVER.test(text)) return [] // not a Server Action file
-  const authRe = authFns.length ? new RegExp(`${AUTH.source}|${authFns.map(escapeRe).join('|')}`, 'i') : AUTH
+  const authRe = buildAuthRe(authFns)
   // Slice the file into exported-function segments so an auth call in ONE action
   // doesn't clear an unauthed write in ANOTHER (the file-level false negative).
   // Each segment runs from one `export … function/const` to the next.
+  //
+  // The two questions need DIFFERENT views of the file, which is the same split
+  // `scanRoute` already makes:
+  //
+  //   "does it write?"        → `text`, strings intact. Raw SQL lives inside a
+  //                             string (sql`delete from …`, db.query('delete …')),
+  //                             so blanking strings would hide real writes.
+  //   "does it authenticate?" → `code`, string CONTENTS blanked. A string that
+  //                             merely MENTIONS a helper is not a check.
+  //
+  // This is where `code` was computed and then never used: both tests ran on
+  // `text`, so an error message reading "call requireUser() first" cleared a
+  // Server Action that deleted rows — caught in a route handler, missed here.
+  //
+  // stripJsComments blanks in place, so offsets in the two views line up. That
+  // is also why USE_SERVER reads `text`: `'use server'` IS a string.
   const starts = []
   let e
   EXPORT_FN.lastIndex = 0
@@ -372,7 +871,7 @@ export function scanServerAction(rawText, file, { authFns = [] } = {}) {
     const seg = text.slice(a, b)
     const write = dbWrite(seg)
     if (!write) continue // this action does no DB write → nothing to guard
-    if (authRe.test(seg)) continue // this action authenticates → clean
+    if (authRe.test(code.slice(a, b))) continue // a REAL auth call → clean
     const line = lineOf(text, a + write.index)
     if (seen.has(line)) continue
     seen.add(line)

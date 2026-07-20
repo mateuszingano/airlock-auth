@@ -12,7 +12,7 @@
 //   airlock-auth --json
 //
 // Exit codes:
-//   0  passed — no exposed secret
+//   0  passed — nothing blocking found
 //   1  failed — a NEXT_PUBLIC_ secret is exposed
 //   2  usage error (path not found)
 
@@ -37,6 +37,11 @@ Arguments:
   DIR                Project root to scan. Default: current directory.
 
 Options:
+  --fail-on <level>  What breaks the build: "fail" (default) or "warn". Three of
+                     the four rules (unauth_mutation, unauth_server_action,
+                     unverified_webhook) only ever emit warn — without this flag
+                     they are printed but cannot gate. Env: $AUTH_GUARD_FAIL_ON.
+  --strict           Alias for --fail-on warn.
   --allow <tokens>   Comma-separated tokens to silence. Matches a rule
                      (rule:unauth_mutation) or any finding whose object contains
                      it (a route path / env name). Env: $AUTH_GUARD_ALLOW.
@@ -54,7 +59,7 @@ Rules:
   unauth_server_action (warn) a Server Action ('use server') that writes with no auth
   unverified_webhook (warn)  a webhook route with no signature verification
 
-Exit codes: 0 = passed, 1 = exposed secret, 2 = usage error.`
+Exit codes: 0 = passed, 1 = blocking finding, 2 = usage error.`
 
 function splitList(v) {
   return (v || '').split(',').map((s) => s.trim()).filter(Boolean)
@@ -73,6 +78,9 @@ function parseArgs(argv) {
     else if (a === '--format') opts.format = argv[++i]
     else if (a.startsWith('--format=')) opts.format = a.slice('--format='.length)
     else if (a === '--markdown' || a === '--md') opts.format = 'markdown'
+    else if (a === '--fail-on') opts.failOn = argv[++i]
+    else if (a.startsWith('--fail-on=')) opts.failOn = a.slice('--fail-on='.length)
+    else if (a === '--strict') opts.failOn = 'warn' // convenience alias
     else if (a === '--allow') opts.allow = splitList(argv[++i])
     else if (a.startsWith('--allow=')) opts.allow = splitList(a.slice('--allow='.length))
     else if (a === '--auth-fn') opts.authFns = splitList(argv[++i])
@@ -82,6 +90,10 @@ function parseArgs(argv) {
   }
   opts.dir = positional[0] || DEFAULT_DIR
   opts.allow = [...splitList(process.env.AUTH_GUARD_ALLOW), ...opts.allow]
+  opts.failOn = (opts.failOn || process.env.AUTH_GUARD_FAIL_ON || 'fail').toLowerCase()
+  if (opts.failOn !== 'fail' && opts.failOn !== 'warn') {
+    throw new UsageError(`Invalid --fail-on "${opts.failOn}". Use "fail" (default) or "warn".`)
+  }
   opts.authFns = [...splitList(process.env.AUTH_GUARD_AUTH_FNS), ...opts.authFns]
   return opts
 }
@@ -106,10 +118,10 @@ function report(r) {
   const warns = r.findings.filter((f) => f.severity === 'warn')
 
   if (fails.length) {
-    console.log(`${RED}✗ ${fails.length} exposed secret(s):${RESET}`)
+    console.log(`${RED}✗ ${fails.length} blocking finding(s):${RESET}`)
     for (const f of fails) printFinding(f, '✗', RED)
   } else {
-    console.log(`${GREEN}✓ No exposed secrets.${RESET}`)
+    console.log(`${GREEN}✓ No exposed secrets and no unguarded handlers.${RESET}`)
   }
 
   if (warns.length) {
@@ -119,11 +131,15 @@ function report(r) {
 
   if (r.allowed.length) console.log(`${DIM}ℹ ${r.allowed.length} finding(s) allowed by config.${RESET}`)
 
-  if (r.passed) {
+  if (r.gatePassed) {
     const tail = warns.length ? ` ${DIM}(${warns.length} warning(s))${RESET}` : ''
     console.log(`\n${GREEN}Auth check passed.${RESET}${tail} ${DIM}(${r.files} file(s) scanned)${RESET}`)
+    if (warns.length) {
+      console.log(`${DIM}  ${warns.length} warning(s) did not fail the build. Use --fail-on warn to gate on them.${RESET}`)
+    }
   } else {
-    console.log(`\n${RED}Auth check failed: ${r.problems} exposed secret(s).${RESET}`)
+    const what = r.problems ? `${r.problems} blocking finding(s)` : `${warns.length} warning(s) with --fail-on warn`
+    console.log(`\n${RED}Auth check failed: ${what}.${RESET}`)
   }
 }
 
@@ -140,10 +156,27 @@ async function main() {
   }
 
   const r = enrich(await scan({ dir: opts.dir, allow: opts.allow, authFns: opts.authFns }))
+
+  // NOTHING SCANNED IS NOT THE SAME AS NOTHING WRONG.
+  // A path that exists but holds no scannable source (wrong `dir:` in the
+  // workflow, a monorepo that moved, a sparse checkout) used to print
+  // "Auth check passed. (0 file(s) scanned)" and exit 0 — a green gate with an
+  // approval stamp on an empty read. Fail loudly instead.
+  if (r.files === 0) {
+    console.error(`No scannable source files under "${opts.dir}" — nothing was analyzed.`)
+    console.error(`Point --dir at your app root (the folder holding app/ or pages/).`)
+    return 2
+  }
+
+  // `passed` is the rule-level verdict; `gatePassed` is the build verdict, which
+  // --fail-on can widen to warnings. Three of the four rules only ever emit
+  // warn, so without this they can be printed but never enforced.
+  r.gatePassed = opts.failOn === 'warn' ? r.problems === 0 && r.warnings === 0 : r.passed
+
   if (opts.json) console.log(JSON.stringify(r, null, 2))
   else if (opts.format === 'markdown') console.log(toMarkdown(r))
   else report(r)
-  return r.passed ? 0 : 1
+  return r.gatePassed ? 0 : 1
 }
 
 main()

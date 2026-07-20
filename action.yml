@@ -16,11 +16,25 @@ inputs:
     description: 'Comma-separated names of YOUR auth helpers, so a route guarded by them is not flagged (e.g. requireMember,assertTenant).'
     required: false
     default: ''
+  fail-on:
+    description: 'What breaks the build: "fail" (default) or "warn". Three of the four rules only ever emit warn (unauth_mutation, unauth_server_action, unverified_webhook); with "fail" they are printed but cannot gate.'
+    required: false
+    default: 'fail'
 runs:
   using: 'composite'
   steps:
+    # Runs the code shipped with THIS action tag, not whatever `latest` resolves to
+    # on the registry. Two reasons: a consumer pinned to a tag gets a reproducible
+    # run, and our own self-test workflow exercises the checkout instead of the
+    # already-published package. auth-guard has zero runtime deps, so there is
+    # nothing to install.
+    #
+    # Every input goes through env. `${{ }}` is substituted textually BEFORE bash
+    # parses the line, so quotes do not protect an input used inline in `run:`.
     - shell: bash
       env:
         AUTH_GUARD_ALLOW: ${{ inputs.allow }}
         AUTH_GUARD_AUTH_FNS: ${{ inputs.auth-fn }}
-      run: npx --yes airlock-auth "${{ inputs.dir }}"
+        AUTH_GUARD_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_DIR: ${{ inputs.dir }}
+      run: node "$GITHUB_ACTION_PATH/bin/auth-guard.mjs" "$INPUT_DIR"
