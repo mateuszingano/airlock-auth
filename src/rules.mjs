@@ -227,7 +227,11 @@ function suffixSegments(s) {
 }
 
 /**
- * Does a secret phrase appear in this suffix?
+ * Does a secret phrase appear in this suffix? → `'no'` | `'ambiguous'` | `'yes'`
+ *
+ * Three-valued on purpose. The tail after a secret word decides the verdict, and
+ * a tail we cannot read confidently must not be answered with silence — see
+ * isHarmlessTail.
  *
  * Two matching modes, because they have different false-positive profiles:
  *
@@ -254,9 +258,12 @@ function matchesSecret(suffix, { phrases, words }) {
   // Words that mean the variable holds something ABOUT a secret rather than the
   // secret: a URL, a label, a number, a piece of UI text. A credential is never
   // called `..._DOCS_URL` or `..._HELP_LINK`.
+  // Words that mean the name POINTS AT a secret instead of holding one. Only
+  // these may clear a finding outright, and only in the segment IMMEDIATELY
+  // after the secret word (see isHarmlessTail).
   const PUBLIC_TAIL = new Set([
     // names/describes one
-    'NAME', 'ID', 'LABEL', 'TYPE', 'PREFIX', 'HEADER', 'FIELD', 'PARAM',
+    'NAME', 'ID', 'LABEL', 'HEADER', 'FIELD', 'PARAM',
     'PLACEHOLDER', 'EXAMPLE', 'HINT', 'TITLE', 'DESCRIPTION',
     // points at one
     'URL', 'URI', 'LINK', 'HREF', 'PATH', 'ENDPOINT', 'DOCS', 'DOC', 'PAGE', 'HELP',
@@ -265,29 +272,72 @@ function matchesSecret(suffix, { phrases, words }) {
     'REGEX', 'PATTERN', 'STRENGTH', 'FORMAT',
     // configures one
     'ENABLED', 'DISABLED', 'LENGTH', 'SECONDS', 'SECS', 'MS', 'MINUTES', 'HOURS',
-    'DAYS', 'AGE', 'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT', 'MODE',
-    'COUNT', 'MAX', 'MIN', 'PER', 'LIMIT', 'RETRIES', 'DISPLAY', 'BETA', 'FLAG',
-    'REQUIRED', 'REFRESH', 'ROTATION', 'RESET',
+    'DAYS', 'AGE', 'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT',
+    'PER', 'LIMIT', 'RETRIES', 'DISPLAY', 'REQUIRED', 'REFRESH', 'ROTATION',
   ])
 
-  // A tail is harmless when ANY of its segments is one of those words — not
-  // when ALL of them are.
+  // Words that USED to sit in PUBLIC_TAIL and silently cleared the finding, but
+  // do not actually say the name points elsewhere. `MODE`, `TYPE`, `PREFIX`,
+  // `MAX`, `MIN`, `COUNT`, `BETA`, `FLAG` and `RESET` describe an environment or
+  // a feature toggle, and a real credential is named that way all the time:
+  // `NEXT_PUBLIC_SERVICE_ROLE_KEY_MODE` and `NEXT_PUBLIC_API_KEY_PROD_TYPE`
+  // read exactly like the thing itself. They now downgrade to `warn` instead of
+  // silence — the reader still gets told, the build still passes.
+  const CONFIG_TAIL = new Set(['MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET'])
+
+  // What the tail after a secret word means — and the reason this is not a
+  // boolean.
   //
-  // Requiring ALL was the first attempt and it reopened the false positive it
-  // was meant to close: `PASSWORD_RESET_URL`, `SECRETS_DOCS_URL` and
-  // `PASSWORDS_POLICY_TEXT` became build-breaking CRITICALs telling the reader
-  // to ROTATE a docs link. An exhaustive list of harmless words does not exist,
-  // so any rule shaped "every word must be known-safe" fails on the first
-  // unlisted word — and there is always an unlisted word.
+  // The first attempt required ALL tail segments to be known-safe, which made
+  // `PASSWORD_RESET_URL` and `SECRETS_DOCS_URL` build-breaking CRITICALs telling
+  // the reader to ROTATE a docs link. An exhaustive list of harmless words does
+  // not exist, so "every word must be known-safe" fails on the first unlisted
+  // one — and there is always an unlisted one.
   //
-  // Reading it as "does this name point AT a secret rather than hold one"
-  // degrades safely: an unknown word no longer forces a false alarm. The
-  // versioned-suffix scar stays closed because `V2`, `NEW`, `PROD` and `BACKUP`
-  // say nothing about pointing anywhere — `SERVICE_ROLE_KEY_V2` is still a fail.
-  const isHarmlessTail = (from) => {
+  // The fix for that was `.some()` over the WHOLE tail, and it went too far the
+  // other way: ONE known-safe word ANYWHERE downstream cleared the name, so
+  // `NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_MAX` shipped a service_role key past
+  // the single rule that can fail a build. A gate whose headline promise is
+  // "fails the build on a NEXT_PUBLIC_ secret" may not be disarmed by a trailing
+  // word.
+  //
+  // So: only the segment IMMEDIATELY after the secret can clear it, because that
+  // is the position where English actually makes the name point elsewhere
+  // (`PASSWORD_RESET_URL` → the tail starts at RESET, and URL is what it points
+  // at). A safe word further downstream is genuinely ambiguous — neither clean
+  // nor provable — and ambiguity resolves to `warn`, never to silence.
+  //
+  // The versioned-suffix scar stays closed: `V2`, `NEW`, `PROD` and `BACKUP` say
+  // nothing about pointing anywhere, so `SERVICE_ROLE_KEY_V2` is still a fail.
+  // `strength` is what keeps this from swapping one false alarm for another.
+  // A PHRASE (`SERVICE ROLE`, `API KEY`, `DATABASE URL`) names a credential and
+  // nothing else — no config knob is called "service role", so a config word
+  // after it does not make it config. A bare WORD (`PRIVATE`, `PASSWORD`,
+  // `TOKEN`, `SECRET`) is ordinary English that modifies the noun after it:
+  // `PRIVATE_BETA` is a feature flag, `PASSWORD_MIN_LENGTH` is a form rule.
+  // Same tail word, opposite meaning, decided by what it trails.
+  // Nouns that FINISH the credential's name rather than start its tail:
+  // `SERVICE ROLE` matches at ROLE, but the name is `SERVICE_ROLE_KEY`, so the
+  // real tail begins after KEY. Without this, `SERVICE_ROLE_KEY_MAX` was judged
+  // on a tail of [KEY, MAX] — MAX only downstream — and came out `ambiguous`
+  // when it is flatly a service_role key.
+  const CREDENTIAL_NOUN = new Set(['KEY', 'KEYS', 'TOKEN', 'TOKENS', 'SECRET', 'SECRETS', 'CREDENTIAL', 'CREDENTIALS', 'PASSWORD', 'PASSWORDS', 'PAT'])
+
+  const isHarmlessTail = (from0, strength) => {
+    let from = from0
+    while (from < segs.length && CREDENTIAL_NOUN.has(segs[from])) from++
     const tail = segs.slice(from)
-    if (tail.length === 0) return false
-    return tail.some((seg) => PUBLIC_TAIL.has(seg))
+    if (tail.length === 0) return 'yes'
+    if (PUBLIC_TAIL.has(tail[0])) return 'no'
+    // A config word right after a bare secret WORD reads as config. After a
+    // credential PHRASE it does not: there is no public `NEXT_PUBLIC_` variable
+    // whose name contains "service role" or "secret key", whatever trails it.
+    // Not even a downgrade to `warn` — the headline promise is that the build
+    // FAILS on a shipped credential, and `SERVICE_ROLE_KEY_MAX` is one.
+    if (CONFIG_TAIL.has(tail[0])) return strength === 'word' ? 'no' : 'yes'
+    // A pointer word further down the tail: cannot prove it either way.
+    if (tail.slice(1).some((seg) => PUBLIC_TAIL.has(seg) || CONFIG_TAIL.has(seg))) return 'ambiguous'
+    return 'yes'
   }
 
   // A phrase matches when its words appear as CONSECUTIVE whole segments.
@@ -304,16 +354,22 @@ function matchesSecret(suffix, { phrases, words }) {
     }
     return -1
   }
+  // The strongest verdict any phrase/word produces wins: one unambiguous hit is
+  // enough, and an ambiguous hit still beats silence.
+  let verdict = 'no'
+  const raise = (v) => { if (v === 'yes') verdict = 'yes'; else if (v === 'ambiguous' && verdict === 'no') verdict = 'ambiguous' }
+
   for (const p of phrases) {
     const end = runEndsAt(p.words)
-    if (end !== -1 && !isHarmlessTail(end)) return true
+    if (end !== -1) raise(isHarmlessTail(end, 'phrase'))
     // Fallback for a name written with NO separators at all (`SERVICEROLEKEY`):
     // there are no segments to reason about, so a glued substring is the only
     // signal available.
-    if (segs.length === 1 && glued.includes(p.glued)) return true
+    if (segs.length === 1 && glued.includes(p.glued)) raise('yes')
   }
   const at = segs.findIndex((seg) => words.some((w) => sameWord(seg, w)))
-  return at !== -1 && !isHarmlessTail(at + 1)
+  if (at !== -1) raise(isHarmlessTail(at + 1, 'word'))
+  return verdict
 }
 
 /** `'SERVICE ROLE'` → `{ words: ['SERVICE','ROLE'], glued: 'SERVICEROLE' }` */
@@ -620,8 +676,15 @@ export function scanSecrets(rawText, file) {
     //    vendor key) → warn. Plenty of vendors ship a browser key with exactly
     //    that name (Mixpanel, Contentful, Amplitude…), so failing the build here
     //    is the false alarm that gets the gate uninstalled on day one.
-    const hard = matchesSecret(suffix, HARD_SECRET_MATCH)
-    const soft = matchesSecret(suffix, SECRETY_MATCH) && !PUBLIC_OK.test(canonicalSuffix(suffix))
+    //  - AMBIGUOUS tail (a config/pointer word downstream of the secret, e.g.
+    //    `SERVICE_ROLE_KEY_MAX`) → warn even when the word itself is HARD. We
+    //    cannot prove it holds the credential, and we refuse to prove it does
+    //    not: the old code answered silence here, which is how a service_role
+    //    key walked past the gate.
+    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH)
+    const softV = PUBLIC_OK.test(canonicalSuffix(suffix)) ? 'no' : matchesSecret(suffix, SECRETY_MATCH)
+    const hard = hardV === 'yes'
+    const soft = softV !== 'no' || hardV === 'ambiguous'
     if (!hard && !soft) continue
     seen.add(name)
     out.push(
@@ -798,6 +861,18 @@ export function scanPagesRoute(rawText, file, { authFns = [] } = {}) {
     // `!== 'GET'`, leaves a GET-only handler, which is not mutating.
     const neg = PAGES_MUTATION_NEGATED.exec(text)
     if (neg && /^(post|put|patch|delete)$/i.test(neg[1])) mut = neg
+  }
+  // No recognized method discrimination AT ALL, but the handler writes to the
+  // database. A Pages Router default export answers EVERY verb — POST included —
+  // so a handler that never looks at `req.method` and then writes is reachable
+  // as a mutation by anyone who can reach the URL. Requiring a recognized
+  // method-check first made "I could not read how this route dispatches" render
+  // as "this route does not mutate", which is the silence this gate exists to
+  // remove. A route that DOES consult `req.method` in a form we cannot parse
+  // stays silent — that is a coverage gap, reported as such, not a guess.
+  if (!mut && !/\breq\.method\b/.test(code)) {
+    const write = dbWrite(text)
+    if (write) mut = Object.assign([write[0]], { index: write.index })
   }
   if (!mut) return out // GET-only or no explicit mutating method → not flagged
 

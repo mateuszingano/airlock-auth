@@ -19,7 +19,8 @@
   "scripts": {
     "start": "node bin/auth-guard.mjs",
     "test": "node --test",
-    "prepublishOnly": "node --test"
+    "prepublishOnly": "node scripts/assert-tests-ran.mjs",
+    "test:gate": "node scripts/assert-tests-ran.mjs"
   },
   "keywords": [
     "nextjs",

@@ -62,6 +62,19 @@ Monitor):
   a secret hardcoded in client code or shipped some other way.
 - **Read handlers** (`GET`) — a `GET` that leaks data without auth is not flagged;
   only mutations are.
+- **A credential named after a config word** — the suffix is read as English, and
+  a bare secret word followed by a config word is treated as config, because that
+  is what it almost always is (`NEXT_PUBLIC_PRIVATE_BETA` is a feature flag,
+  `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` is a form rule). So
+  `NEXT_PUBLIC_DB_PASSWORD_FLAG` reads clean while `NEXT_PUBLIC_DB_PASSWORD`
+  fails. A credential *phrase* (`SERVICE_ROLE`, `SECRET_KEY`, `PRIVATE_KEY`) is
+  never waved through this way — `NEXT_PUBLIC_SERVICE_ROLE_KEY_MAX` fails.
+- **Pages Router method dispatch we cannot parse** — a `pages/api` handler that
+  writes and never mentions `req.method` is flagged (it answers every verb). One
+  that *does* consult `req.method` in a shape the matcher doesn't recognize
+  (`['POST'].includes(req.method)`, a dispatch table) stays silent. That is a
+  coverage gap, not a verdict — recognized shapes are `===`/`!==`/`case`, with or
+  without `.toUpperCase()`.
 - **Server Action write coverage** — each exported action is judged on its own
   (an auth call in one action no longer clears another). The write signal covers
   Supabase/knex (`.from(...).insert/update/delete`), Drizzle (`db.insert(...)`),

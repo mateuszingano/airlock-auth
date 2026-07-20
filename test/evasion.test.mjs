@@ -337,3 +337,87 @@ test('#walk build output is skipped at any depth, except inside a route tree', a
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT 20/07 — the two findings that held the release at 0,0.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CRITICAL. The tail-word amnesty was applied with `.some()` over the WHOLE
+// tail, so ONE known-safe word ANYWHERE downstream cleared the name. That
+// disarmed the single rule that can fail a build: a service_role key with a
+// trailing `_MAX` shipped into the browser bundle reported CLEAN. The headline
+// promise — "fails the build on a NEXT_PUBLIC_ secret" — was false for every
+// name shaped this way.
+test('#tail a trailing config word does not disarm a credential', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`export const x = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+
+  // Was `clean` for all of these. A credential PHRASE is never public config,
+  // whatever trails it.
+  for (const v of [
+    'NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_MAX', 'NEXT_PUBLIC_SERVICE_ROLE_KEY_MODE',
+    'NEXT_PUBLIC_SERVICE_ROLE_KEY_COUNT', 'NEXT_PUBLIC_STRIPE_SECRET_KEY_RESET',
+    'NEXT_PUBLIC_FIREBASE_PRIVATE_KEY_TYPE', 'NEXT_PUBLIC_DB_PASSWORD_PROD',
+  ]) assert.equal(sev(v), 'fail', `${v} is a shipped credential and must break the build`)
+
+  // KNOWN LIMIT, asserted so it stays a decision and not a drift: a bare secret
+  // WORD followed by a config word is read as config, because that is what it
+  // is in English far more often than not (`PRIVATE_BETA`, `PASSWORD_MIN_…`).
+  // `DB_PASSWORD_FLAG` pays for that: it reads clean. Naming a credential after
+  // a config word is the one spelling this rule cannot see, and it is listed in
+  // the README's coverage gaps rather than left for a user to discover.
+  assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD_FLAG'), 'clean')
+  assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD'), 'fail', 'the same name without the config word still fails')
+
+  // Ambiguous — a pointer word further down the tail. Reported, not silenced,
+  // and not a build break either: we cannot prove it holds the credential and
+  // we refuse to prove it does not.
+  assert.equal(sev('NEXT_PUBLIC_SERVICE_ROLE_KEY_PROD_URL'), 'warn')
+
+  // …and the false alarms this amnesty existed to prevent stay prevented. A
+  // bare secret WORD is ordinary English that modifies the noun after it.
+  for (const v of [
+    'NEXT_PUBLIC_PASSWORD_MIN_LENGTH', 'NEXT_PUBLIC_PRIVATE_BETA',
+    'NEXT_PUBLIC_PASSWORD_RESET_URL', 'NEXT_PUBLIC_API_KEY_HEADER',
+    'NEXT_PUBLIC_TOKEN_REFRESH_INTERVAL', 'NEXT_PUBLIC_ADMIN_KEYCLOAK_URL',
+    'NEXT_PUBLIC_SERVER_TOKENIZER_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  ]) assert.equal(sev(v), 'clean', `${v} is public config, not a secret`)
+})
+
+// HIGH. A Pages Router default export answers EVERY verb. Requiring a
+// RECOGNIZED method-check before flagging meant "I could not read how this
+// route dispatches" rendered as "this route does not mutate" — so a handler
+// that never looks at req.method and then deletes rows read clean.
+test('#pages a write with no method-check at all is a mutation', () => {
+  const rule = (src) => {
+    const f = scanPagesRoute(src, 'pages/api/x.ts')
+    return f[0] ? f[0].rule : 'clean'
+  }
+
+  assert.equal(
+    rule(`export default async function h(req,res){ await supabase.from('users').delete().eq('id',req.body.id); res.json({ok:1}) }`),
+    'unauth_mutation',
+    'answers POST, writes, never checks the verb or the caller'
+  )
+
+  // …without inventing a false alarm on the shapes that are genuinely fine.
+  assert.equal(
+    rule(`export default async function h(req,res){ const {data:{user}}=await supabase.auth.getUser(); await supabase.from('users').delete().eq('id',1) }`),
+    'clean', 'it authenticates'
+  )
+  assert.equal(
+    rule(`export default async function h(req,res){ const {data}=await supabase.from('users').select(); res.json(data) }`),
+    'clean', 'read-only'
+  )
+  assert.equal(
+    rule(`export default async function h(req,res){ if(req.method!=='GET') return res.status(405).end(); await supabase.from('l').insert({}) }`),
+    'clean', 'GET-only by a recognized guard'
+  )
+  // A method-check we cannot parse is a COVERAGE GAP, not a licence to guess.
+  assert.equal(
+    rule(`export default async function h(req,res){ const m=req.method; if(!['POST'].includes(m)) return res.end(); await supabase.from('u').insert({}) }`),
+    'clean', 'it does consult req.method — unparsed shape stays silent, by design'
+  )
+})

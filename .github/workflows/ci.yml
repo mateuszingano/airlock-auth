@@ -9,7 +9,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - run: node --test
+      # NOT a bare `node --test`: that exits 0 on an empty directory, so a
+      # suite that vanished would keep this job green. The gate asserts a floor
+      # of passing tests across a floor of discovered files.
+      - run: node scripts/assert-tests-ran.mjs
 
   # 2) The Action must GATE: run it (uses: ./) against the leaky fixture and
   #    assert it fails the build — a gate that never fails is worthless.
