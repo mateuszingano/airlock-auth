@@ -402,8 +402,15 @@ function matchesSecret(suffix, { phrases, words }, { neverPublic = false } = {})
     // signal available.
     if (segs.length === 1 && glued.includes(p.glued)) raise('yes')
   }
-  const at = segs.findIndex((seg) => words.some((w) => sameWord(seg, w)))
-  if (at !== -1) raise(isHarmlessTail(at + 1, 'word', segs[at]))
+  // EVERY secret word is judged, not just the first. Stopping at the first hit
+  // let a leading softening word (`PASSWORD`, `PRIVATE`) with a config tail
+  // silence a bare hard-secret word further along the SAME name:
+  // `PASSWORD_RESET_SECRET` read clean — PASSWORD+RESET said "config", and the
+  // real `SECRET` at the end was never looked at. Judging each and taking the
+  // strongest verdict closes that: PASSWORD→'no', but SECRET (empty tail)→'yes'.
+  for (let i = 0; i < segs.length; i++) {
+    if (words.some((w) => sameWord(segs[i], w))) raise(isHarmlessTail(i + 1, 'word', segs[i]))
+  }
   return verdict
 }
 

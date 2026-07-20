@@ -102,7 +102,10 @@ Monitor):
   Supabase/knex (`.from(...).insert/update/delete`), Drizzle (`db.insert(...)`),
   Prisma (`prisma.x.create/update/delete`) and executed raw SQL — a Supabase
   `.rpc('...')` write (ambiguous: read or write) or another ORM's `.create()` is
-  not matched.
+  not matched. The write must sit **inside** the exported action: a write
+  extracted into a module-level helper declared *above* the exports, then called
+  from an action, is not attributed to it (the write is judged per exported
+  segment). Keep the DB call in the action, or gate the helper itself.
 - **Route auth is judged per HANDLER.** A `GET` that calls `getUser()` next to a
   naked `POST` in the same `route.ts` does **not** clear the `POST` — each
   exported handler is sliced out and judged on its own. (An earlier release

@@ -720,3 +720,27 @@ test('a REST endpoint URL is not a connection string', () => {
     assert.equal(sev(v), 'fail', `${v} is a connection string`)
   }
 })
+
+// FULL-COVERAGE AUDIT (20/07) M1 — the fail-rule stopped at the FIRST secret
+// word, so a leading softening word with a config tail silenced a bare hard
+// secret later in the same name. `PASSWORD_RESET_SECRET` read clean.
+test('a hard secret later in the name is not silenced by a leading softening word', () => {
+  const sev = (v) => {
+    const f = scanSecrets(`const k = process.env.${v}`, 'a.ts')
+    return f[0] ? f[0].severity : 'clean'
+  }
+  // Every secret word is judged now, strongest verdict wins → these fail.
+  for (const v of [
+    'NEXT_PUBLIC_PASSWORD_RESET_SECRET', 'NEXT_PUBLIC_PASSWORD_POLICY_SECRET',
+    'NEXT_PUBLIC_PRIVATE_URL_SECRET', 'NEXT_PUBLIC_PRIVATE_ENDPOINT_SECRET',
+    'NEXT_PUBLIC_PASSWORD_HEADER_SECRET',
+  ]) assert.equal(sev(v), 'fail', `${v} ends in a bare SECRET — must fail`)
+
+  // …and the softening floor is intact: a name that is genuinely config still
+  // clears. Judging every word must not turn these into false alarms.
+  for (const v of [
+    'NEXT_PUBLIC_PASSWORD_MIN_LENGTH', 'NEXT_PUBLIC_PRIVATE_BETA',
+    'NEXT_PUBLIC_TOKEN_REFRESH_INTERVAL', 'NEXT_PUBLIC_PASSWORD_RESET_URL',
+    'NEXT_PUBLIC_DB_PASSWORD_FLAG', 'NEXT_PUBLIC_PRIVATE_BETA_FLAG',
+  ]) assert.equal(sev(v), 'clean', `${v} is public config`)
+})
