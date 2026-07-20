@@ -507,3 +507,33 @@ test('AUDIT-FIX: a provider-qualified callback is a webhook; a bare OAuth callba
   const oauth = scanRoute(unverified, 'app/auth/callback/route.ts')
   assert.ok(!oauth.some((x) => x.rule === 'unverified_webhook'), '/auth/callback is the OAuth leg, not a webhook')
 })
+
+// F4 (audit 20/07). An allow-list entry that silences NOTHING was accepted in
+// silence. Stale suppression reads as protection-with-an-exception while the
+// exception guards nothing — and when the finding returns under a slightly
+// different name, the entry the author trusts will not cover it.
+test('#allow an entry that matched nothing is reported, not swallowed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ag-allow-'))
+  try {
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(join(dir, 'app/api/charge'), { recursive: true })
+    await writeFile(join(dir, 'lib.ts'), 'export const K = process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY\n')
+    await writeFile(join(dir, 'app/api/charge/route.ts'), 'export async function POST(req){ await db.from("t").insert({}) }\n')
+
+    // A live entry silences and is NOT reported stale.
+    const live = await scan({ dir, allow: ['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY'] })
+    assert.equal(live.problems, 0, 'the live entry really does silence')
+    assert.deepEqual(live.staleAllows, [], 'a live entry is never called stale')
+
+    // A dead entry is reported — the finding it claims to cover is still open.
+    const dead = await scan({ dir, allow: ['NEXT_PUBLIC_RENAMED_LAST_MONTH', '/api/route-that-moved'] })
+    assert.equal(dead.staleAllows.length, 2, 'both dead entries surface')
+    assert.equal(dead.problems, 1, 'and the secret they failed to cover still fails the build')
+
+    // Mixed: only the dead one is named.
+    const mixed = await scan({ dir, allow: ['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY', 'rule:nonexistent_rule'] })
+    assert.deepEqual(mixed.staleAllows, ['rule:nonexistent_rule'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

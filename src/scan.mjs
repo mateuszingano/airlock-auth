@@ -76,6 +76,25 @@ function short(file, dir) {
  * @param {{dir?: string, files?: string[], allow?: string[]}} opts
  * @returns {Promise<{files:number, findings:Array, allowed:Array, problems:number, warnings:number, passed:boolean}>}
  */
+/**
+ * Does allow-list entry `a` silence finding `f`?
+ *
+ * Deliberately precise, so one loose token can't wave through unrelated
+ * findings:
+ *  - `rule:<name>`   → silence a whole rule (explicit, deliberate).
+ *  - a FAIL (secret) → require an EXACT env-name match. A substring like `key`
+ *    must NOT silence every secret whose name contains "key".
+ *  - a WARN (route)  → a path token must start with `/` and appear in the
+ *    object (routes are identified by path); otherwise require an exact match.
+ */
+function matches(a, f, obj) {
+  if (a === `rule:${f.rule}`) return true
+  if (a.startsWith('rule:')) return false
+  if (f.severity === 'fail') return obj === a
+  if (a.startsWith('/')) return obj.includes(a)
+  return obj === a
+}
+
 export async function scan({ dir, files, allow = [], authFns = [] } = {}) {
   // Directories the walker skipped (build output, dot-dirs) are collected and
   // reported alongside oversized files — an unscanned tree must be visible, not
@@ -142,26 +161,25 @@ export async function scan({ dir, files, allow = [], authFns = [] } = {}) {
   const allowSet = allow.map((a) => a.toLowerCase()).filter(Boolean)
   const kept = []
   const allowed = []
+  // Which allow-list entries actually silenced something (see staleAllows).
+  const used = new Set()
   for (const f of findings) {
     const obj = (f.object || '').toLowerCase()
-    // Match precisely so one loose token can't wave through unrelated findings:
-    //  - `rule:<name>`   → silence a whole rule (explicit, deliberate).
-    //  - a FAIL (secret) → require an EXACT env-name match. A substring like
-    //    `key` must NOT silence every secret whose name contains "key".
-    //  - a WARN (route)  → a path token must start with `/` and appear in the
-    //    object (routes are identified by path); otherwise require an exact match.
-    const hit = allowSet.some((a) => {
-      if (a === `rule:${f.rule}`) return true
-      if (a.startsWith('rule:')) return false
-      if (f.severity === 'fail') return obj === a
-      if (a.startsWith('/')) return obj.includes(a)
-      return obj === a
-    })
+    const hit = allowSet.some((a) => matches(a, f, obj))
+    if (hit) for (const a of allowSet) if (matches(a, f, obj)) used.add(a)
     ;(hit ? allowed : kept).push(f)
   }
+
+  // An allow-list entry that silenced NOTHING. Always a stale suppression: the
+  // route was renamed, the env var dropped, the rule name mistyped. It reads as
+  // active protection-with-an-exception while the exception guards nothing — and
+  // if the finding comes back under a slightly different name, the entry the
+  // author believes is covering it will not. Reported, never silently accepted:
+  // the same rule this scanner applies to directories it skips.
+  const staleAllows = allowSet.filter((a) => !used.has(a))
 
   kept.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'fail' ? -1 : 1))
   const problems = kept.filter((f) => f.severity === 'fail').length
   const warnings = kept.filter((f) => f.severity === 'warn').length
-  return { files: all.length, findings: kept, allowed, skipped, problems, warnings, passed: problems === 0 }
+  return { files: all.length, findings: kept, allowed, skipped, staleAllows, problems, warnings, passed: problems === 0 }
 }

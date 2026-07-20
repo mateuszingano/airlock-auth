@@ -81,8 +81,12 @@ function parseArgs(argv) {
     else if (a === '--fail-on') opts.failOn = argv[++i]
     else if (a.startsWith('--fail-on=')) opts.failOn = a.slice('--fail-on='.length)
     else if (a === '--strict') opts.failOn = 'warn' // convenience alias
-    else if (a === '--allow') opts.allow = splitList(argv[++i])
-    else if (a.startsWith('--allow=')) opts.allow = splitList(a.slice('--allow='.length))
+    // ACCUMULATE. Assigning meant a repeated `--allow a --allow b` silently
+    // dropped `a` — the user believes two findings are allow-listed, one is not,
+    // and nothing says so. Same silent-suppression family this scanner exists to
+    // remove; `--allow` was documented as comma-separated, never as single-use.
+    else if (a === '--allow') opts.allow.push(...splitList(argv[++i]))
+    else if (a.startsWith('--allow=')) opts.allow.push(...splitList(a.slice('--allow='.length)))
     else if (a === '--auth-fn') opts.authFns = splitList(argv[++i])
     else if (a.startsWith('--auth-fn=')) opts.authFns = splitList(a.slice('--auth-fn='.length))
     else if (a.startsWith('-')) throw new UsageError(`Unknown option: ${a}`)
@@ -130,6 +134,13 @@ function report(r) {
   }
 
   if (r.allowed.length) console.log(`${DIM}ℹ ${r.allowed.length} finding(s) allowed by config.${RESET}`)
+
+  // A suppression that suppresses nothing is stale, and stale suppression reads
+  // as coverage that isn't there. Say so — the same rule as reporting `skipped`.
+  if (r.staleAllows?.length) {
+    console.log(`${YELLOW}! ${r.staleAllows.length} allow-list entr(y/ies) matched nothing:${RESET}`)
+    for (const a of r.staleAllows) console.log(`    ${YELLOW}!${RESET} ${a} ${DIM}— nothing matched it. Renamed or already fixed? Remove it, or it will not cover the finding you think it covers.${RESET}`)
+  }
 
   if (r.gatePassed) {
     const tail = warns.length ? ` ${DIM}(${warns.length} warning(s))${RESET}` : ''
