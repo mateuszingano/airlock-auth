@@ -15,7 +15,7 @@ npx airlock-auth ./apps/web
 
 | Rule | Level | Catches |
 |------|-------|---------|
-| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, master key, database URL, password, LLM-provider key) |
+| `public_secret` | fail | a server secret exposed via `NEXT_PUBLIC_*` (service role key, API key, token, access key, secret, private/signing/encryption key, master key, database URL, password, LLM-provider key). A **known-public vendor key** (Supabase anon, Stripe publishable, Paddle client token, Firebase, PostHog…) is exempt — never flagged. A name whose secret word is trailed by a config/pointer word we cannot resolve (`SERVICE_ROLE_KEY_ROTATION`, `CRON_SECRET_ENDPOINT`) is a `warn`, not a build break. |
 | `unauth_mutation` | warn | a mutating route with no auth check — App Router `route.ts` **and** Pages Router `pages/api` |
 | `unauth_server_action` | warn | a Server Action (`'use server'`) that writes to the DB with no auth check |
 | `unverified_webhook` | warn | a webhook route that never verifies a signature |
@@ -62,24 +62,30 @@ Monitor):
   a secret hardcoded in client code or shipped some other way.
 - **Read handlers** (`GET`) — a `GET` that leaks data without auth is not flagged;
   only mutations are.
-- **A credential whose name ends in `PRIVATE`/`PASSWORD`/`TOKEN` + a config word.**
-  The suffix is read as English. Those three words form genuine config names
-  (`NEXT_PUBLIC_PRIVATE_BETA` is a feature flag, `NEXT_PUBLIC_PASSWORD_MIN_LENGTH`
-  is a form rule, `NEXT_PUBLIC_TOKEN_REFRESH_INTERVAL` is a duration), so a
-  config word right after them clears the finding. The cost is real and precise:
-  `NEXT_PUBLIC_DB_PASSWORD_FLAG` reads clean while `NEXT_PUBLIC_DB_PASSWORD`
-  fails. **Only those words soften** — `CREDENTIALS`, `PASS` and `PAT` do not, so
-  `NEXT_PUBLIC_DB_CREDENTIALS_FLAG` warns.
-  A credential **phrase** (`SERVICE_ROLE`, `SECRET_KEY`, `PRIVATE_KEY`,
-  `WEBHOOK_SECRET`, `JWT_SECRET`, `SIGNING_SECRET`, `ENCRYPTION_KEY`,
-  `SESSION_SECRET`, `CLIENT_SECRET`, `ADMIN_KEY`, `MASTER_KEY`…) is **never**
-  softened by a config word: `NEXT_PUBLIC_SERVICE_ROLE_KEY_MAX` and
-  `NEXT_PUBLIC_STRIPE_WEBHOOK_SIGNING_SECRET_MODE` both fail the build.
-  A **pointer** word (`URL`, `DOCS`, `ROTATION`, `LIMIT`, `PER`, `REQUIRED`…)
-  right after a credential phrase downgrades it to a **warning**, not silence —
-  `NEXT_PUBLIC_SERVICE_ROLE_KEY_ROTATION` warns. After a bare word it still
-  clears: `NEXT_PUBLIC_SMTP_PASS_ROTATION` and `NEXT_PUBLIC_DB_CREDENTIALS_LIMIT`
-  read clean. That residue is the known floor of reading names as English.
+- **How a trailing word is read.** The suffix is parsed as English, and silence
+  must be *earned* — the default when anything is uncertain is a warning, never a
+  pass. Concretely:
+  - A **credential phrase** (`SERVICE_ROLE`, `SECRET_KEY`, `WEBHOOK_SECRET`,
+    `JWT_SECRET`, `SIGNING_SECRET`, `ENCRYPTION_KEY`, `SESSION_SECRET`,
+    `CLIENT_SECRET`, `ADMIN_KEY`, `MASTER_KEY`, `DATABASE_URL`…) followed by a
+    **config** word still **fails**: `SERVICE_ROLE_KEY_MAX`,
+    `STRIPE_WEBHOOK_SIGNING_SECRET_MODE`, `SERVICE_ROLE_KEY_ROTATION` all break
+    the build.
+  - A **true pointer** word (`URL`, `DOCS`, `HEADER`, `NAME`, `ENDPOINT`) right
+    after a phrase means the variable *points at* the credential — `API_KEY_HEADER`,
+    `SERVICE_ROLE_KEY_DOCS_URL` — and is cleared (or, when the stem is itself a
+    bare secret word, warned). A pointer word never breaks the build.
+  - The **known floor:** a *bare* `PRIVATE`/`PASSWORD`/`TOKEN` followed by a
+    config word reads as a config name and is cleared — `PASSWORD_MIN_LENGTH`,
+    `PRIVATE_BETA`, `TOKEN_REFRESH_INTERVAL`, and as a cost `DB_PASSWORD_FLAG`.
+    Only those three words soften; `CREDENTIALS`, `PASS`, `PAT` and every hard
+    word (`SECRET`, `SIGNING`…) do not, so `DB_CREDENTIALS_FLAG` and
+    `CRON_SECRET_ROTATION` **warn** rather than pass.
+- **A known-public vendor key is never flagged.** Supabase anon, Stripe
+  publishable, Paddle client token, Firebase, PostHog, Mixpanel and the rest are
+  allow-listed by design — a browser key that is public by the vendor's own docs
+  must not break a build. An unknown vendor's genuinely-public `*_API_KEY` will
+  fail; `--allow NEXT_PUBLIC_THAT_NAME` is the escape hatch.
 - **Pages Router method dispatch we cannot parse** — a `pages/api` handler that
   writes and never mentions `req.method` is flagged (it answers every verb). One
   that *does* consult `req.method` in a shape the matcher doesn't recognize

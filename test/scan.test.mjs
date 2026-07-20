@@ -460,10 +460,23 @@ test('AUDIT-FIX: an unambiguous secret still FAILS', () => {
   }
 })
 
-test('AUDIT-FIX: a generic unknown API key is a WARN, not a silent pass', () => {
+// OWNER DECISION (audit 20/07, round 3): the README's rule table promises that
+// a NEXT_PUBLIC_ "API key / token / access key / database URL / LLM key" FAILS
+// the build. The owner chose to make the code match the promise rather than
+// soften the table. So a secret-reading name that is NOT a known-public vendor
+// key (those are exempted by PUBLIC_OK first) now breaks the build. This
+// reverses the earlier warn tier deliberately — the trade-off (an unknown
+// vendor's genuinely-public `*_API_KEY` now fails CI) was accepted with eyes
+// open, and is escapable per-name with `--allow`.
+test('a generic unknown secret name breaks the build (owner decision, was warn)', () => {
   const f = scanSecrets('const k = process.env.NEXT_PUBLIC_WIDGETCO_API_KEY', 'a.ts')
   assert.equal(f.length, 1)
-  assert.equal(f[0].severity, 'warn')
+  assert.equal(f[0].severity, 'fail')
+
+  // …but a known-public vendor key is still exempt — no day-one false alarm.
+  for (const v of ['NEXT_PUBLIC_MIXPANEL_TOKEN', 'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY']) {
+    assert.equal(scanSecrets(`const k = process.env.${v}`, 'a.ts').length, 0, `${v} stays clean`)
+  }
 })
 
 test('AUDIT-FIX: reading the signature header is NOT verifying it', () => {

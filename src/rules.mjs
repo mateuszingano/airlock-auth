@@ -246,7 +246,7 @@ function suffixSegments(s) {
  *    end-anchor existed in the first place. Segment matching gives that
  *    protection without caring what comes after.
  */
-function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
+function matchesSecret(suffix, { phrases, words }) {
   const segs = suffixSegments(suffix)
   const glued = canonicalSuffix(suffix)
 
@@ -258,10 +258,9 @@ function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
   // Words that mean the variable holds something ABOUT a secret rather than the
   // secret: a URL, a label, a number, a piece of UI text. A credential is never
   // called `..._DOCS_URL` or `..._HELP_LINK`.
-  // Words that mean the name POINTS AT a secret instead of holding one. Only
-  // these may clear a finding outright, and only in the segment IMMEDIATELY
-  // after the secret word (see isHarmlessTail).
-  const PUBLIC_TAIL = new Set([
+  // Words that say the name POINTS AT or DESCRIBES a credential rather than
+  // holding one. `SECRET_DOCS_URL` is a link; `API_KEY_HEADER` is a header name.
+  const POINTER_TAIL = new Set([
     // names/describes one
     'NAME', 'ID', 'LABEL', 'HEADER', 'FIELD', 'PARAM',
     'PLACEHOLDER', 'EXAMPLE', 'HINT', 'TITLE', 'DESCRIPTION',
@@ -270,20 +269,19 @@ function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
     // says something about one
     'TEXT', 'MESSAGE', 'MSG', 'COPY', 'ERROR', 'PROMPT', 'POLICY', 'RULES',
     'REGEX', 'PATTERN', 'STRENGTH', 'FORMAT',
-    // configures one
+  ])
+
+  // Words that CONFIGURE something — a duration, a toggle, an environment, a
+  // bound. These never say the name points elsewhere. Keeping `ROTATION`,
+  // `REFRESH`, `REQUIRED`, `LIMIT` and `PER` on the pointer list is what left
+  // `NEXT_PUBLIC_CRON_SECRET_ROTATION` reading clean after two rounds of fixes:
+  // a rotation setting is not a link, and Vercel's own docs name that variable.
+  const CONFIG_TAIL = new Set([
+    'MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET',
     'ENABLED', 'DISABLED', 'LENGTH', 'SECONDS', 'SECS', 'MS', 'MINUTES', 'HOURS',
     'DAYS', 'AGE', 'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT',
     'PER', 'LIMIT', 'RETRIES', 'DISPLAY', 'REQUIRED', 'REFRESH', 'ROTATION',
   ])
-
-  // Words that USED to sit in PUBLIC_TAIL and silently cleared the finding, but
-  // do not actually say the name points elsewhere. `MODE`, `TYPE`, `PREFIX`,
-  // `MAX`, `MIN`, `COUNT`, `BETA`, `FLAG` and `RESET` describe an environment or
-  // a feature toggle, and a real credential is named that way all the time:
-  // `NEXT_PUBLIC_SERVICE_ROLE_KEY_MODE` and `NEXT_PUBLIC_API_KEY_PROD_TYPE`
-  // read exactly like the thing itself. They now downgrade to `warn` instead of
-  // silence — the reader still gets told, the build still passes.
-  const CONFIG_TAIL = new Set(['MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET'])
 
   // What the tail after a secret word means — and the reason this is not a
   // boolean.
@@ -301,14 +299,10 @@ function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
   // "fails the build on a NEXT_PUBLIC_ secret" may not be disarmed by a trailing
   // word.
   //
-  // So: only the segment IMMEDIATELY after the secret can clear it, because that
-  // is the position where English actually makes the name point elsewhere
-  // (`PASSWORD_RESET_URL` → the tail starts at RESET, and URL is what it points
-  // at). A safe word further downstream is genuinely ambiguous — neither clean
-  // nor provable — and ambiguity resolves to `warn`, never to silence.
-  //
-  // The versioned-suffix scar stays closed: `V2`, `NEW`, `PROD` and `BACKUP` say
-  // nothing about pointing anywhere, so `SERVICE_ROLE_KEY_V2` is still a fail.
+  // So silence must be earned rather than assumed — see the inverted default in
+  // isHarmlessTail. The versioned-suffix scar stays closed either way: `V2`,
+  // `NEW`, `PROD` and `BACKUP` say nothing about pointing anywhere, so
+  // `SERVICE_ROLE_KEY_V2` is still a fail.
   // `strength` is what keeps this from swapping one false alarm for another.
   // A PHRASE (`SERVICE ROLE`, `API KEY`, `DATABASE URL`) names a credential and
   // nothing else — no config knob is called "service role", so a config word
@@ -332,30 +326,47 @@ function matchesSecret(suffix, { phrases, words }, { strict = false } = {}) {
     while (from < segs.length && CREDENTIAL_NOUN.has(segs[from])) from++
     const tail = segs.slice(from)
     if (tail.length === 0) return 'yes'
-    // A pointer word clears a bare secret WORD outright, but must not clear a
-    // credential PHRASE in a strict (hard-secret) match. Narrowing the amnesty
-    // from "any position" to "position 1" closed `SERVICE_ROLE_KEY_MAX` and left
-    // `SERVICE_ROLE_KEY_ROTATION` wide open — same exploit, different suffix.
-    // A service_role key is not a docs link because the word ROTATION follows it.
-    if (PUBLIC_TAIL.has(tail[0])) return strict && strength === 'phrase' ? 'ambiguous' : 'no'
-    // A config word right after a credential PHRASE changes nothing: there is no
-    // public `NEXT_PUBLIC_` variable whose name contains "service role" or
-    // "webhook secret", whatever trails it. Not even a downgrade to `warn` — the
-    // headline promise is that the build FAILS on a shipped credential.
+    const known = (seg) => POINTER_TAIL.has(seg) || CONFIG_TAIL.has(seg)
+
+    // THE DEFAULT IS INVERTED, and that inversion is the whole design.
     //
-    // After a bare WORD it only clears the finding when that word is one that
-    // really does form config names in English. `PRIVATE`, `PASSWORD` and
-    // `TOKEN` do — `PRIVATE_BETA` is a feature flag, `PASSWORD_MIN_LENGTH` is a
-    // form rule, `TOKEN_REFRESH_INTERVAL` is a duration. `CREDENTIALS`, `PASS`
-    // and `PAT` do not: nobody names a config knob "credentials flag", so
-    // silencing `DB_CREDENTIALS_FLAG` bought a false negative and prevented no
-    // false alarm.
-    if (CONFIG_TAIL.has(tail[0])) {
-      if (strength === 'phrase') return 'yes'
-      return SOFTENING_WORDS.has(matchedWord) ? 'no' : 'ambiguous'
-    }
-    // A pointer word further down the tail: cannot prove it either way.
-    if (tail.slice(1).some((seg) => PUBLIC_TAIL.has(seg) || CONFIG_TAIL.has(seg))) return 'ambiguous'
+    // Three rounds of this same bug taught it. The old shape was "clear the
+    // finding, UNLESS one of these branches objects", and each round closed one
+    // branch while the next stayed open: `.some()` over the whole tail let
+    // `SERVICE_ROLE_KEY_MAX` through; narrowing to position 1 left
+    // `SERVICE_ROLE_KEY_ROTATION`; guarding hard phrases left `CRON_SECRET_ROTATION`
+    // and the entire soft set. A rule that must be blindfolded one hole at a time
+    // is the wrong rule, and the next hole is always the one nobody listed.
+    //
+    // So silence is now EARNED, and only two things earn it:
+
+    // (1) A bare SOFTENING word (PRIVATE/PASSWORD/TOKEN) + any known word forms a
+    // genuine English config or descriptor name: `PRIVATE_BETA` is a flag,
+    // `PASSWORD_MIN_LENGTH` a form rule, `TOKEN_ENDPOINT` the OAuth token URL,
+    // `PASSWORD_RESET_URL` a link. Only those three words qualify — `SECRET`,
+    // `PASS`, `CREDENTIAL`, `PAT` do NOT form config names, so a bare
+    // `CRON_SECRET_ROTATION` / `REVALIDATE_SECRET_ENDPOINT` is NOT cleared here.
+    if (strength === 'word' && SOFTENING_WORDS.has(matchedWord) && known(tail[0])) return 'no'
+
+    // (2) A TRUE POINTER word immediately after a credential PHRASE — URL, DOCS,
+    // HEADER, NAME. The phrase names the credential AND the pointer proves this
+    // variable points at it rather than holds it: `API_KEY_HEADER` is a header
+    // name, `SERVICE_ROLE_KEY_DOCS_URL` a link. A bare hard word does NOT get
+    // this — `SECRET_ENDPOINT` reads as "the secret", not "an endpoint".
+    if (strength === 'phrase' && POINTER_TAIL.has(tail[0])) return 'no'
+
+    // A config word after a credential PHRASE is still the credential and breaks
+    // the build: no public variable is named "service role" or "webhook secret",
+    // whatever trails it. `SERVICE_ROLE_KEY_ROTATION` and `_MAX` both fail. The
+    // words that broke this before (ROTATION, REFRESH, LIMIT, PER, REQUIRED) are
+    // config, not pointers — a key's rotation setting is still about the key.
+    if (strength === 'phrase' && CONFIG_TAIL.has(tail[0])) return 'yes'
+
+    // Everything else that touches a known word cannot be proven either way — a
+    // config word after a bare hard secret (`CRON_SECRET_ROTATION`), a pointer
+    // after a bare hard secret (`SECRET_ENDPOINT`), a known word only downstream.
+    // Warn, never silence.
+    if (tail.some(known)) return 'ambiguous'
     return 'yes'
   }
 
@@ -695,26 +706,27 @@ export function scanSecrets(rawText, file) {
     // separators to tell whole segments apart (see matchesSecret).
     const suffix = name.slice('NEXT_PUBLIC_'.length)
     if (seen.has(name)) continue
-    // Severity is split so the build-breaking verdict stays unambiguous:
-    //  - HARD secret (service_role, *_SECRET, PRIVATE_KEY, ADMIN_KEY…) → fail.
-    //    There is no world where these belong in the browser bundle.
-    //  - SOFT signal (a generic *_API_KEY / *_TOKEN that is not a known-public
-    //    vendor key) → warn. Plenty of vendors ship a browser key with exactly
-    //    that name (Mixpanel, Contentful, Amplitude…), so failing the build here
-    //    is the false alarm that gets the gate uninstalled on day one.
-    //  - AMBIGUOUS tail (a config/pointer word downstream of the secret, e.g.
-    //    `SERVICE_ROLE_KEY_MAX`) → warn even when the word itself is HARD. We
-    //    cannot prove it holds the credential, and we refuse to prove it does
-    //    not: the old code answered silence here, which is how a service_role
-    //    key walked past the gate.
-    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH, { strict: true })
+    // A NEXT_PUBLIC_ name that reads as a secret and is NOT a known-public
+    // vendor key breaks the build. The README's rule table promises exactly
+    // that for "API key, token, access key, database URL, LLM-provider key", and
+    // the code now delivers it rather than quietly warning. Known-public vendor
+    // keys (Mixpanel, Firebase, Paddle, Stripe-publishable…) are exempted by
+    // PUBLIC_OK before this runs, so the day-one false alarm they would cause
+    // never happens.
+    //
+    // The one non-fail secret verdict is `ambiguous`: a config/pointer word
+    // downstream of the secret (`SERVICE_ROLE_KEY_ROTATION`, `API_KEY_DOCS_URL`).
+    // We can neither prove it holds the credential nor prove it points away, so
+    // it WARNS — the old code answered silence here, which is how a service_role
+    // key walked past the gate.
+    const hardV = matchesSecret(suffix, HARD_SECRET_MATCH)
     const softV = PUBLIC_OK.test(canonicalSuffix(suffix)) ? 'no' : matchesSecret(suffix, SECRETY_MATCH)
-    const hard = hardV === 'yes'
-    const soft = softV !== 'no' || hardV === 'ambiguous'
-    if (!hard && !soft) continue
+    const breaksBuild = hardV === 'yes' || softV === 'yes'
+    const warns = hardV === 'ambiguous' || softV === 'ambiguous'
+    if (!breaksBuild && !warns) continue
     seen.add(name)
     out.push(
-      hard
+      breaksBuild
         ? { rule: 'public_secret', severity: 'fail', file, line: lineOf(text, m.index), object: name, detail: `${name} is inlined into the client bundle by Next.js — a "NEXT_PUBLIC_" secret is readable by anyone. Rename it (drop NEXT_PUBLIC_) and read it server-side only.` }
         : { rule: 'public_secret', severity: 'warn', file, line: lineOf(text, m.index), object: name, detail: `${name} is inlined into the client bundle by Next.js. If this holds a server secret, rename it (drop NEXT_PUBLIC_) and read it server-side only. If it is a vendor's public browser key, allow-list it with --allow ${name}.` }
     )

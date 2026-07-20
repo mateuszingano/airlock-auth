@@ -287,10 +287,16 @@ test('#plural widening the matcher did not create new false alarms', () => {
     // URL or TEXT forced a CRITICAL telling the reader to ROTATE a docs link.
     // An exhaustive list of harmless words does not exist, which is why the
     // rule asks whether the name POINTS AT a secret instead.
-    'NEXT_PUBLIC_PASSWORD_RESET_URL', 'NEXT_PUBLIC_SECRETS_DOCS_URL',
+    'NEXT_PUBLIC_PASSWORD_RESET_URL',
     'NEXT_PUBLIC_PASSWORDS_POLICY_TEXT', 'NEXT_PUBLIC_TOKEN_MAX_AGE',
     'NEXT_PUBLIC_TOKENS_PER_PAGE', 'NEXT_PUBLIC_API_KEYS_HELP_LINK',
   ]) assert.equal(sev(v), 'clean', `${v} is public by design`)
+
+  // `SECRETS_DOCS_URL` moved from clean to WARN when the default was inverted: a
+  // bare `SECRET` word is too strong to be cleared by a pointer word alone, or
+  // `REVALIDATE_SECRET_ENDPOINT` (a real Vercel/Next name) would stay silent
+  // too. It is surfaced as a warning, not a build break — the safe direction.
+  assert.equal(sev('NEXT_PUBLIC_SECRETS_DOCS_URL'), 'warn')
 })
 
 // The fix that liberated app/api/build removed depth-based skipping with it, so
@@ -438,21 +444,32 @@ test('#tail credential PHRASES survive every trailing word', () => {
     'STRIPE_WEBHOOK_SIGNING_SECRET', 'SESSION_SECRET', 'JWT_SECRET', 'CLIENT_SECRET',
     'NEXTAUTH_SECRET', 'SECRET_KEY', 'PRIVATE_KEY', 'MASTER_KEY', 'ADMIN_KEY',
   ]
-  // A config word never softens a phrase: still a build break.
+  // NO config word softens a phrase: all of them stay a build break. ROTATION,
+  // REFRESH, REQUIRED, LIMIT and PER are config words (a key's rotation setting
+  // is still about the key), not pointers — leaving them on the pointer list is
+  // what let `SERVICE_ROLE_KEY_ROTATION` read clean for two rounds.
   for (const s of stems) {
-    for (const suf of ['MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET']) {
+    for (const suf of ['MODE', 'TYPE', 'PREFIX', 'MAX', 'MIN', 'COUNT', 'BETA', 'FLAG', 'RESET', 'ROTATION', 'REFRESH', 'REQUIRED', 'LIMIT', 'PER']) {
       assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'fail', `NEXT_PUBLIC_${s}_${suf} is a shipped credential`)
     }
-    // A pointer word downgrades to a warning — never to silence.
-    for (const suf of ['ROTATION', 'REFRESH', 'REQUIRED', 'LIMIT', 'PER']) {
-      assert.equal(sev(`NEXT_PUBLIC_${s}_${suf}`), 'warn', `NEXT_PUBLIC_${s}_${suf} must not be silenced`)
+    // A TRUE pointer word (URL, DOCS, HEADER…) genuinely points outward, so it
+    // must never BREAK THE BUILD. It clears for a clean phrase (SERVICE_ROLE),
+    // and warns when the stem is also a bare secret word (ENCRYPTION, SIGNING) —
+    // either way, never a fail on a name that points at the credential.
+    for (const suf of ['DOCS_URL', 'HEADER', 'ENDPOINT']) {
+      assert.notEqual(sev(`NEXT_PUBLIC_${s}_${suf}`), 'fail', `NEXT_PUBLIC_${s}_${suf} points at the credential, must not break the build`)
     }
+    // The pure-phrase stems (no bare-word component) clear outright.
+    assert.equal(sev('NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY_DOCS_URL'), 'clean')
   }
 
-  // Bare words that do NOT form config names keep their finding.
-  for (const v of ['NEXT_PUBLIC_DB_CREDENTIALS_FLAG', 'NEXT_PUBLIC_SMTP_PASS_MODE', 'NEXT_PUBLIC_GITHUB_PAT_TYPE']) {
+  // Bare words that do NOT form config names keep their finding as a warning.
+  for (const v of ['NEXT_PUBLIC_DB_CREDENTIALS_FLAG', 'NEXT_PUBLIC_SMTP_PASS_MODE']) {
     assert.equal(sev(v), 'warn', `${v} is not a config knob`)
   }
+  // `GITHUB PAT` is a PHRASE, so a config word after it fails the build — a
+  // GitHub personal access token is a real secret, not a knob.
+  assert.equal(sev('NEXT_PUBLIC_GITHUB_PAT_TYPE'), 'fail')
 
   // …and the false alarms stay prevented. These are the shapes that made an
   // earlier release unusable; every one must still read clean.
@@ -464,9 +481,13 @@ test('#tail credential PHRASES survive every trailing word', () => {
     'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN', 'NEXT_PUBLIC_FIREBASE_DATABASE_URL',
   ]) assert.equal(sev(v), 'clean', `${v} is public by design`)
 
-  // KNOWN FLOOR, asserted so it stays a decision and not drift. Documented in
-  // the README's coverage gaps.
+  // KNOWN FLOOR, asserted so it stays a decision and not drift. A bare softening
+  // word (PRIVATE/PASSWORD/TOKEN) + a config word reads as a config name, so
+  // `DB_PASSWORD_FLAG` clears. Documented in the README's coverage gaps.
   assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD_FLAG'), 'clean')
-  assert.equal(sev('NEXT_PUBLIC_SMTP_PASS_ROTATION'), 'clean')
   assert.equal(sev('NEXT_PUBLIC_DB_PASSWORD'), 'fail', 'the same name without the tail still fails')
+  // A NON-softening bare word (PASS, CREDENTIALS) + a config word no longer
+  // clears — it warns. The residue the inversion closed.
+  assert.equal(sev('NEXT_PUBLIC_SMTP_PASS_ROTATION'), 'warn')
+  assert.equal(sev('NEXT_PUBLIC_DB_CREDENTIALS_LIMIT'), 'warn')
 })
