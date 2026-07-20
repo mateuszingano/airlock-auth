@@ -7,8 +7,12 @@ import { scanSecrets, scanRoute, scanPagesRoute, scanServerAction, isRouteFile, 
 // Never yours, wherever it appears. (`.next`, `.git`, `.turbo`, `.vercel` are
 // dot-directories and are already skipped at any depth by the rule above.)
 const ALWAYS_SKIP = new Set(['node_modules'])
-// Build output at the project root — but legitimate route segments inside app/.
-const ROOT_ONLY_SKIP = new Set(['dist', 'build', 'coverage'])
+// Build output. Skipped at ANY depth — a monorepo keeps it at
+// `apps/web/dist`, not at the root — EXCEPT inside a route tree, where `build`
+// is a path segment rather than an artifact directory.
+const BUILD_OUTPUT = new Set(['dist', 'build', 'coverage'])
+// Route trees, where a directory named `build` means the URL /api/build.
+const ROUTE_TREE = /(^|[\\/])(app|pages|src[\\/](app|pages))([\\/]|$)/
 
 // A hand-written route/env file is never this big; beyond it, the file is
 // generated or minified (a bundle, a data blob) with no real auth signal, and
@@ -35,20 +39,23 @@ export async function collectFiles(root, { skippedDirs = [] } = {}) {
       // Two different kinds of "skip", and collapsing them caused a bug in each
       // direction:
       //
-      // ROOT-ONLY (`dist`, `build`, `coverage`). These are build output at the
-      // project root and ROUTES inside app/ — `app/api/build/route.ts` is a
-      // plausible and privileged rebuild endpoint. Skipping the name at any
-      // depth made those invisible.
+      // BUILD OUTPUT (`dist`, `build`, `coverage`) is skipped at any depth,
+      // EXCEPT inside a route tree. The distinction is what the name MEANS
+      // where it sits, and getting it wrong burns in both directions:
       //
-      // ANY-DEPTH (`node_modules`). Never yours, at any depth. Loosening the
-      // rule to fix the case above took this with it, so a nested
-      // `app/api/node_modules/` got walked: thousands of third-party files
-      // scanned, and findings reported against code the reader cannot fix.
+      //   - Skipping it only at the project root missed every monorepo, which
+      //     keeps its artifacts at `apps/web/dist`. A stale bundle then broke a
+      //     clean build, pointing at generated code the developer cannot fix.
+      //   - Skipping it everywhere hid `app/api/build/route.ts`, where `build`
+      //     is a URL segment and the handler is a plausible privileged
+      //     rebuild endpoint.
+      //
+      // ANY-DEPTH (`node_modules`) is never yours, wherever it appears.
       if (e.isDirectory() && ALWAYS_SKIP.has(e.name)) {
         skippedDirs.push(relative(root, p) || e.name)
         continue
       }
-      if (e.isDirectory() && ROOT_ONLY_SKIP.has(e.name) && d === root) {
+      if (e.isDirectory() && BUILD_OUTPUT.has(e.name) && !ROUTE_TREE.test(relative(root, d))) {
         skippedDirs.push(relative(root, p) || e.name)
         continue
       }

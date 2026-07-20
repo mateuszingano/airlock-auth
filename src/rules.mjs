@@ -251,29 +251,43 @@ function matchesSecret(suffix, { phrases, words }) {
   // `SECRET_PROD` are the thing itself. Distinguishing the two is what lets the
   // versioned suffixes be caught without re-flagging public config — the old
   // end-anchor could not tell them apart, so it rejected BOTH.
-  // Two families of harmless tail:
-  //   METADATA — this names or describes a secret (`API_KEY_HEADER`)
-  //   CONFIG   — this is a knob ABOUT a secret, never the secret
-  //              (`PASSWORD_MIN_LENGTH`, `PRIVATE_BETA`, `TOKEN_TTL`)
-  const METADATA_TAIL = ['NAME', 'ID', 'LABEL', 'TYPE', 'PREFIX', 'HEADER', 'FIELD', 'PARAM', 'PLACEHOLDER', 'EXAMPLE', 'HINT']
-  const CONFIG_TAIL = [
-    'ENABLED', 'DISABLED', 'LENGTH', 'SECONDS', 'SECS', 'MS', 'MINUTES', 'HOURS', 'DAYS',
-    'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT', 'MODE', 'COUNT', 'MAX', 'MIN',
-    'LIMIT', 'RETRIES', 'DISPLAY', 'BETA', 'FLAG', 'REQUIRED', 'STRENGTH', 'POLICY',
-    'REFRESH', 'ROTATION', 'REGEX', 'PATTERN', 'RULES',
-  ]
+  // Words that mean the variable holds something ABOUT a secret rather than the
+  // secret: a URL, a label, a number, a piece of UI text. A credential is never
+  // called `..._DOCS_URL` or `..._HELP_LINK`.
+  const PUBLIC_TAIL = new Set([
+    // names/describes one
+    'NAME', 'ID', 'LABEL', 'TYPE', 'PREFIX', 'HEADER', 'FIELD', 'PARAM',
+    'PLACEHOLDER', 'EXAMPLE', 'HINT', 'TITLE', 'DESCRIPTION',
+    // points at one
+    'URL', 'URI', 'LINK', 'HREF', 'PATH', 'ENDPOINT', 'DOCS', 'DOC', 'PAGE', 'HELP',
+    // says something about one
+    'TEXT', 'MESSAGE', 'MSG', 'COPY', 'ERROR', 'PROMPT', 'POLICY', 'RULES',
+    'REGEX', 'PATTERN', 'STRENGTH', 'FORMAT',
+    // configures one
+    'ENABLED', 'DISABLED', 'LENGTH', 'SECONDS', 'SECS', 'MS', 'MINUTES', 'HOURS',
+    'DAYS', 'AGE', 'INTERVAL', 'EXPIRY', 'EXPIRES', 'TTL', 'TIMEOUT', 'MODE',
+    'COUNT', 'MAX', 'MIN', 'PER', 'LIMIT', 'RETRIES', 'DISPLAY', 'BETA', 'FLAG',
+    'REQUIRED', 'REFRESH', 'ROTATION', 'RESET',
+  ])
 
-  // The tail is harmless only when EVERY segment after the secret token is one
-  // of those words. Testing just the next segment failed on the common shape:
-  // `PASSWORD_MIN_LENGTH` has `MIN` next, which said nothing, so a trivially
-  // public config var became a CRITICAL telling the reader to ROTATE THE KEY —
-  // a build broken over a number. Requiring the WHOLE tail to be harmless also
-  // keeps the versioned-suffix scar closed: `SERVICE_ROLE_KEY_V2` has `KEY` in
-  // its tail, which is neither metadata nor config, so it is still a fail.
+  // A tail is harmless when ANY of its segments is one of those words — not
+  // when ALL of them are.
+  //
+  // Requiring ALL was the first attempt and it reopened the false positive it
+  // was meant to close: `PASSWORD_RESET_URL`, `SECRETS_DOCS_URL` and
+  // `PASSWORDS_POLICY_TEXT` became build-breaking CRITICALs telling the reader
+  // to ROTATE a docs link. An exhaustive list of harmless words does not exist,
+  // so any rule shaped "every word must be known-safe" fails on the first
+  // unlisted word — and there is always an unlisted word.
+  //
+  // Reading it as "does this name point AT a secret rather than hold one"
+  // degrades safely: an unknown word no longer forces a false alarm. The
+  // versioned-suffix scar stays closed because `V2`, `NEW`, `PROD` and `BACKUP`
+  // say nothing about pointing anywhere — `SERVICE_ROLE_KEY_V2` is still a fail.
   const isHarmlessTail = (from) => {
     const tail = segs.slice(from)
     if (tail.length === 0) return false
-    return tail.every((seg) => METADATA_TAIL.includes(seg) || CONFIG_TAIL.includes(seg))
+    return tail.some((seg) => PUBLIC_TAIL.has(seg))
   }
 
   // A phrase matches when its words appear as CONSECUTIVE whole segments.

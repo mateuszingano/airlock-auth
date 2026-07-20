@@ -282,6 +282,14 @@ test('#plural widening the matcher did not create new false alarms', () => {
     'NEXT_PUBLIC_SITE_URL', 'NEXT_PUBLIC_ADMIN_KEYCLOAK_URL', 'NEXT_PUBLIC_SERVER_TOKENIZER_URL',
     'NEXT_PUBLIC_PASSWORD_MIN_LENGTH', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY',
     'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN',
+    // These six are the ones the first attempt at this fix broke. It required
+    // EVERY tail segment to be a known-harmless word, so an unlisted word like
+    // URL or TEXT forced a CRITICAL telling the reader to ROTATE a docs link.
+    // An exhaustive list of harmless words does not exist, which is why the
+    // rule asks whether the name POINTS AT a secret instead.
+    'NEXT_PUBLIC_PASSWORD_RESET_URL', 'NEXT_PUBLIC_SECRETS_DOCS_URL',
+    'NEXT_PUBLIC_PASSWORDS_POLICY_TEXT', 'NEXT_PUBLIC_TOKEN_MAX_AGE',
+    'NEXT_PUBLIC_TOKENS_PER_PAGE', 'NEXT_PUBLIC_API_KEYS_HELP_LINK',
   ]) assert.equal(sev(v), 'clean', `${v} is public by design`)
 })
 
@@ -300,6 +308,31 @@ test('#walk node_modules is skipped at any depth; app/api/build is not', async (
     assert.ok(!r.findings.some((f) => String(f.file).includes('node_modules')), 'no findings from vendor code')
     assert.ok(r.findings.some((f) => String(f.file).includes('build')), 'app/api/build is still a route we check')
     assert.ok(r.skipped.some((s) => s.includes('node_modules')), 'and the skip is reported, never silent')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// A monorepo keeps its artifacts at apps/web/dist, not at the root. Skipping
+// build output only at the root meant a stale bundle broke a clean build,
+// pointing at generated code the developer cannot fix. Skipping it everywhere
+// hid app/api/build/route.ts, where `build` is a URL segment. The rule is about
+// what the name MEANS where it sits.
+test('#walk build output is skipped at any depth, except inside a route tree', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ag-mono-'))
+  try {
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(join(dir, 'apps/web/dist'), { recursive: true })
+    await mkdir(join(dir, 'packages/ui/build'), { recursive: true })
+    await mkdir(join(dir, 'apps/web/app/api/build'), { recursive: true })
+    await writeFile(join(dir, 'apps/web/dist/bundle.js'), 'export const K = process.env.NEXT_PUBLIC_STRIPE_SECRET_KEY\n')
+    await writeFile(join(dir, 'packages/ui/build/out.js'), 'export const K = process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY\n')
+    await writeFile(join(dir, 'apps/web/app/api/build/route.ts'), 'export async function POST(req){ await db.from("t").delete().eq("id",1) }\n')
+
+    const r = await scan({ dir })
+    assert.ok(!r.findings.some((f) => /dist|packages/.test(String(f.file))), 'generated bundles must not break a clean build')
+    assert.ok(r.findings.some((f) => /api.build/.test(String(f.file))), 'app/api/build IS a route and stays checked')
+    assert.ok(r.skipped.some((s) => s.includes('dist')), 'and the skip is reported, never silent')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
