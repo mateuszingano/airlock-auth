@@ -140,8 +140,8 @@ which is why the package still has **zero dependencies**.
     # allow: /api/health,rule:unauth_mutation
 ```
 
-> `@v1` works once the first release tag is published. Until then, pin `@main`
-> or run `npx --yes airlock-auth .` in a step.
+> `@v1` tracks the latest v0.x release. Pin a specific tag (e.g. `@v0.1.8`) to
+> lock the version, or run `npx --yes airlock-auth .` in a step.
 
 ## Allow-listing intentional cases
 
