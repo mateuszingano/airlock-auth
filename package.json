@@ -42,6 +42,6 @@
     "type": "git",
     "url": "git+https://github.com/mateuszingano/airlock-auth.git"
   },
-  "homepage": "https://shipsealed.com",
+  "homepage": "https://shipsealed.com/?utm_source=npm&utm_medium=referral&utm_campaign=airlock-auth",
   "license": "MIT"
 }

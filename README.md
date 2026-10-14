@@ -171,4 +171,4 @@ and listed in the report's `skipped` — never dropped silently.
 
 ---
 
-Part of [ShipSealed](https://shipsealed.com) — ship apps that don't leak. MIT licensed.
+Part of [ShipSealed](https://shipsealed.com/?utm_source=readme&utm_medium=referral&utm_campaign=airlock-auth) — ship apps that don't leak. MIT licensed.
